@@ -1,0 +1,333 @@
+// Vocab Trainer — SPA Client
+
+const API = '';
+let currentSessionId = null;
+let questionStartTime = null;
+
+// ── Navigation ───────────────────────────────────────────────────────────
+
+document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+});
+
+function switchView(view) {
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector(`.nav-btn[data-view="${view}"]`).classList.add('active');
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById(`view-${view}`).classList.add('active');
+
+    if (view === 'dashboard') refreshStats();
+    if (view === 'settings') loadSettings();
+}
+
+// ── Dashboard ────────────────────────────────────────────────────────────
+
+async function refreshStats() {
+    try {
+        const stats = await api('/api/stats');
+        document.getElementById('stat-total').textContent = stats.total_words;
+        document.getElementById('stat-reviewed').textContent = stats.words_reviewed;
+        document.getElementById('stat-due').textContent = stats.words_due;
+        document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
+        document.getElementById('stat-sessions').textContent = stats.total_sessions;
+        document.getElementById('stat-bank').textContent = stats.question_bank_size;
+    } catch (e) {
+        console.error('Failed to load stats:', e);
+    }
+}
+
+document.getElementById('btn-start-session').addEventListener('click', startSession);
+document.getElementById('btn-import').addEventListener('click', importVocab);
+document.getElementById('btn-generate').addEventListener('click', generateQuestions);
+
+async function importVocab() {
+    const btn = document.getElementById('btn-import');
+    btn.disabled = true;
+    btn.textContent = 'Importing...';
+    showMessage('dashboard-message', 'Importing vocabulary files...', 'info');
+
+    try {
+        const result = await api('/api/import', 'POST');
+        showMessage('dashboard-message',
+            `Imported ${result.words_imported} words, ${result.clusters_imported} clusters. ` +
+            `Total: ${result.total_words} words, ${result.total_clusters} clusters.`,
+            'success');
+        refreshStats();
+    } catch (e) {
+        showMessage('dashboard-message', 'Import failed: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Import Vocabulary';
+    }
+}
+
+async function generateQuestions() {
+    const btn = document.getElementById('btn-generate');
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    showMessage('dashboard-message', 'Generating questions (this may take a minute)...', 'info');
+
+    try {
+        const result = await api('/api/generate', 'POST', { count: 10 });
+        showMessage('dashboard-message',
+            `Generated ${result.generated} questions. Bank size: ${result.bank_size}`,
+            'success');
+        refreshStats();
+    } catch (e) {
+        showMessage('dashboard-message', 'Generation failed: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Generate Questions';
+    }
+}
+
+// ── Quiz Session ─────────────────────────────────────────────────────────
+
+async function startSession() {
+    switchView('quiz');
+    showQuizState('loading');
+
+    try {
+        const data = await api('/api/session/start', 'POST');
+        if (data.error) {
+            showQuizState('idle');
+            alert(data.error);
+            return;
+        }
+        currentSessionId = data.session_id;
+        showQuestion(data);
+    } catch (e) {
+        showQuizState('idle');
+        alert('Failed to start session: ' + e.message);
+    }
+}
+
+function showQuizState(state) {
+    ['idle', 'loading', 'question', 'summary'].forEach(s => {
+        const el = document.getElementById(`quiz-${s}`);
+        el.classList.toggle('hidden', s !== state);
+    });
+}
+
+function showQuestion(data) {
+    if (data.session_complete) {
+        showSummary(data.summary || { total: 0, correct: 0, accuracy: 0 });
+        return;
+    }
+
+    showQuizState('question');
+    document.getElementById('answer-reveal').classList.add('hidden');
+
+    // Progress
+    const progress = data.progress;
+    const pct = ((progress.current - 1) / progress.total * 100);
+    document.getElementById('progress-bar').style.width = pct + '%';
+    document.getElementById('progress-text').textContent =
+        `Question ${progress.current} of ${progress.total}` +
+        (progress.answered > 0 ? ` | ${progress.correct}/${progress.answered} correct` : '');
+
+    // Question type
+    const typeLabels = {
+        fill_blank: 'Fill in the Blank',
+        best_fit: 'Best Fit',
+        distinction: 'Distinction',
+    };
+    document.getElementById('question-type').textContent =
+        typeLabels[data.question_type] || data.question_type;
+
+    // Cluster
+    document.getElementById('cluster-title').textContent =
+        data.cluster_title ? `Cluster: ${data.cluster_title}` : '';
+
+    // Stem — replace ___ with styled blank
+    const stem = data.stem.replace(/___+/g, '<span class="blank">&nbsp;</span>');
+    document.getElementById('question-stem').innerHTML = stem;
+
+    // Choices
+    const choicesEl = document.getElementById('choices');
+    choicesEl.innerHTML = '';
+    const keys = ['A', 'B', 'C', 'D'];
+    data.choices.forEach((choice, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'choice-btn';
+        btn.innerHTML = `<span class="key">${keys[i]}</span><span>${choice}</span>`;
+        btn.addEventListener('click', () => submitAnswer(i, data));
+        choicesEl.appendChild(btn);
+    });
+
+    questionStartTime = Date.now();
+}
+
+async function submitAnswer(selectedIndex, questionData) {
+    // Disable all choice buttons
+    const buttons = document.querySelectorAll('.choice-btn');
+    buttons.forEach(btn => btn.classList.add('disabled'));
+
+    // Highlight correct/wrong
+    buttons.forEach((btn, i) => {
+        if (i === questionData.correct_index) btn.classList.add('correct');
+        if (i === selectedIndex && i !== questionData.correct_index) btn.classList.add('wrong');
+    });
+
+    const timeSeconds = (Date.now() - questionStartTime) / 1000;
+
+    try {
+        const result = await api('/api/session/answer', 'POST', {
+            session_id: currentSessionId,
+            selected_index: selectedIndex,
+            time_seconds: timeSeconds,
+        });
+
+        // Show answer reveal
+        const reveal = document.getElementById('answer-reveal');
+        reveal.classList.remove('hidden');
+
+        document.getElementById('result-icon').textContent =
+            result.correct ? 'Correct' : 'Incorrect';
+        document.getElementById('result-icon').style.color =
+            result.correct ? 'var(--success)' : 'var(--error)';
+
+        document.getElementById('explanation').textContent = result.explanation;
+        document.getElementById('context-sentence').textContent = result.context_sentence;
+
+        // Audio
+        if (result.audio_hash) {
+            const audio = document.getElementById('tts-audio');
+            audio.src = `/api/audio/${result.audio_hash}.mp3`;
+            audio.hidden = false;
+            audio.play().catch(() => {});
+        }
+
+        // Update progress text
+        const sp = result.session_progress;
+        document.getElementById('progress-text').textContent =
+            `${sp.correct}/${sp.answered} correct | ${sp.remaining} remaining`;
+
+        // Next button
+        const nextBtn = document.getElementById('btn-next');
+        nextBtn.onclick = async () => {
+            if (result.session_complete) {
+                showSummary(result.summary);
+            } else {
+                showQuizState('loading');
+                const nextQ = await api('/api/session/next', 'POST', {
+                    session_id: currentSessionId,
+                });
+                showQuestion(nextQ);
+            }
+        };
+    } catch (e) {
+        console.error('Answer submission failed:', e);
+    }
+}
+
+function showSummary(summary) {
+    showQuizState('summary');
+    document.getElementById('summary-total').textContent = summary.total;
+    document.getElementById('summary-correct').textContent = summary.correct;
+    document.getElementById('summary-accuracy').textContent = summary.accuracy + '%';
+    currentSessionId = null;
+}
+
+document.getElementById('btn-new-session').addEventListener('click', startSession);
+document.getElementById('btn-back-dashboard').addEventListener('click', () => {
+    switchView('dashboard');
+});
+
+// ── Keyboard shortcuts ───────────────────────────────────────────────────
+
+document.addEventListener('keydown', (e) => {
+    const quizQuestion = document.getElementById('quiz-question');
+    if (quizQuestion.classList.contains('hidden')) return;
+
+    const reveal = document.getElementById('answer-reveal');
+    if (!reveal.classList.contains('hidden')) {
+        // Answer revealed — Enter/Space for next
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            document.getElementById('btn-next').click();
+        }
+        return;
+    }
+
+    // Choice selection via A-D or 1-4
+    const keyMap = { a: 0, b: 1, c: 2, d: 3, '1': 0, '2': 1, '3': 2, '4': 3 };
+    const index = keyMap[e.key.toLowerCase()];
+    if (index !== undefined) {
+        const buttons = document.querySelectorAll('.choice-btn');
+        if (buttons[index] && !buttons[index].classList.contains('disabled')) {
+            buttons[index].click();
+        }
+    }
+});
+
+// ── Settings ─────────────────────────────────────────────────────────────
+
+async function loadSettings() {
+    try {
+        const s = await api('/api/settings');
+        document.getElementById('set-llm').value = s.llm_provider;
+        document.getElementById('set-llm-model').value = s.llm_model;
+        document.getElementById('set-tts').value = s.tts_provider;
+        document.getElementById('set-tts-voice').value = s.tts_voice;
+        document.getElementById('set-session-size').value = s.session_size;
+        document.getElementById('set-session-size-val').textContent = s.session_size;
+        document.getElementById('set-new-words').value = s.new_words_per_session;
+        document.getElementById('set-new-words-val').textContent = s.new_words_per_session;
+    } catch (e) {
+        console.error('Failed to load settings:', e);
+    }
+}
+
+document.getElementById('set-session-size').addEventListener('input', (e) => {
+    document.getElementById('set-session-size-val').textContent = e.target.value;
+});
+
+document.getElementById('set-new-words').addEventListener('input', (e) => {
+    document.getElementById('set-new-words-val').textContent = e.target.value;
+});
+
+document.getElementById('settings-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+        await api('/api/settings', 'PUT', {
+            llm_provider: document.getElementById('set-llm').value,
+            llm_model: document.getElementById('set-llm-model').value,
+            tts_provider: document.getElementById('set-tts').value,
+            tts_voice: document.getElementById('set-tts-voice').value,
+            session_size: parseInt(document.getElementById('set-session-size').value),
+            new_words_per_session: parseInt(document.getElementById('set-new-words').value),
+        });
+        showMessage('settings-message', 'Settings saved.', 'success');
+    } catch (e) {
+        showMessage('settings-message', 'Failed to save: ' + e.message, 'error');
+    }
+});
+
+// ── API Helper ───────────────────────────────────────────────────────────
+
+async function api(path, method = 'GET', body = null) {
+    const opts = { method, headers: {} };
+    if (body) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+    }
+    const resp = await fetch(API + path, opts);
+    if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`${resp.status}: ${text}`);
+    }
+    return resp.json();
+}
+
+function showMessage(elementId, text, type) {
+    const el = document.getElementById(elementId);
+    el.textContent = text;
+    el.className = `message ${type}`;
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 8000);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────
+
+refreshStats();

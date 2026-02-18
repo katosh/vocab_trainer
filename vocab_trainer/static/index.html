@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vocab Trainer</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Vocab Trainer</h1>
+            <nav>
+                <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+                <button class="nav-btn" data-view="quiz">Quiz</button>
+                <button class="nav-btn" data-view="settings">Settings</button>
+            </nav>
+        </header>
+
+        <!-- Dashboard View -->
+        <section id="view-dashboard" class="view active">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-total">—</div>
+                    <div class="stat-label">Total Words</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-reviewed">—</div>
+                    <div class="stat-label">Reviewed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-due">—</div>
+                    <div class="stat-label">Due Now</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-accuracy">—</div>
+                    <div class="stat-label">Accuracy</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-sessions">—</div>
+                    <div class="stat-label">Sessions</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-bank">—</div>
+                    <div class="stat-label">Question Bank</div>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button id="btn-start-session" class="btn-primary btn-large">Start Session</button>
+                <button id="btn-import" class="btn-secondary">Import Vocabulary</button>
+                <button id="btn-generate" class="btn-secondary">Generate Questions</button>
+            </div>
+
+            <div id="dashboard-message" class="message hidden"></div>
+        </section>
+
+        <!-- Quiz View -->
+        <section id="view-quiz" class="view">
+            <!-- Pre-quiz state -->
+            <div id="quiz-idle" class="quiz-state">
+                <p>Start a session from the Dashboard to begin.</p>
+            </div>
+
+            <!-- Loading state -->
+            <div id="quiz-loading" class="quiz-state hidden">
+                <div class="spinner"></div>
+                <p>Generating question...</p>
+            </div>
+
+            <!-- Question state -->
+            <div id="quiz-question" class="quiz-state hidden">
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progress-bar"></div>
+                </div>
+                <div class="progress-text" id="progress-text"></div>
+
+                <div class="question-card">
+                    <div class="question-type" id="question-type"></div>
+                    <div class="cluster-title" id="cluster-title"></div>
+                    <div class="question-stem" id="question-stem"></div>
+
+                    <div class="choices" id="choices"></div>
+                </div>
+
+                <div id="answer-reveal" class="answer-reveal hidden">
+                    <div class="result-icon" id="result-icon"></div>
+                    <div class="explanation" id="explanation"></div>
+                    <div class="context-sentence" id="context-sentence"></div>
+                    <audio id="tts-audio" hidden></audio>
+                    <button id="btn-next" class="btn-primary">Next Question</button>
+                </div>
+            </div>
+
+            <!-- Session complete state -->
+            <div id="quiz-summary" class="quiz-state hidden">
+                <h2>Session Complete</h2>
+                <div class="summary-stats">
+                    <div class="summary-item">
+                        <span class="summary-value" id="summary-total">0</span>
+                        <span class="summary-label">Questions</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-value" id="summary-correct">0</span>
+                        <span class="summary-label">Correct</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-value" id="summary-accuracy">0%</span>
+                        <span class="summary-label">Accuracy</span>
+                    </div>
+                </div>
+                <button id="btn-new-session" class="btn-primary btn-large">New Session</button>
+                <button id="btn-back-dashboard" class="btn-secondary">Back to Dashboard</button>
+            </div>
+        </section>
+
+        <!-- Settings View -->
+        <section id="view-settings" class="view">
+            <h2>Settings</h2>
+            <form id="settings-form">
+                <div class="form-group">
+                    <label for="set-llm">LLM Provider</label>
+                    <select id="set-llm">
+                        <option value="ollama">Ollama (local)</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="openai">OpenAI</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="set-llm-model">LLM Model</label>
+                    <input id="set-llm-model" type="text" value="qwen3:8b">
+                </div>
+                <div class="form-group">
+                    <label for="set-tts">TTS Provider</label>
+                    <select id="set-tts">
+                        <option value="edge-tts">Edge TTS (free)</option>
+                        <option value="elevenlabs">ElevenLabs</option>
+                        <option value="piper">Piper (offline)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="set-tts-voice">TTS Voice</label>
+                    <input id="set-tts-voice" type="text" value="en-US-GuyNeural">
+                </div>
+                <div class="form-group">
+                    <label for="set-session-size">Session Size</label>
+                    <input id="set-session-size" type="range" min="5" max="50" value="20">
+                    <span id="set-session-size-val">20</span>
+                </div>
+                <div class="form-group">
+                    <label for="set-new-words">New Words per Session</label>
+                    <input id="set-new-words" type="range" min="0" max="30" value="10">
+                    <span id="set-new-words-val">10</span>
+                </div>
+                <button type="submit" class="btn-primary">Save Settings</button>
+                <div id="settings-message" class="message hidden"></div>
+            </form>
+        </section>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

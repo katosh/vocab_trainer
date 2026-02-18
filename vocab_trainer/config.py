@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+
+DEFAULTS = {
+    "llm_provider": "ollama",
+    "llm_model": "qwen3:8b",
+    "tts_provider": "edge-tts",
+    "tts_voice": "en-US-GuyNeural",
+    "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
+    "session_size": 20,
+    "new_words_per_session": 10,
+    "vocab_files": ["../vocabulary.md", "../vocabulary_distinctions.md"],
+    "audio_cache_dir": "audio_cache",
+    "db_path": "progress.db",
+    "ollama_url": "http://localhost:11434",
+}
+
+
+@dataclass
+class Settings:
+    llm_provider: str = DEFAULTS["llm_provider"]
+    llm_model: str = DEFAULTS["llm_model"]
+    tts_provider: str = DEFAULTS["tts_provider"]
+    tts_voice: str = DEFAULTS["tts_voice"]
+    elevenlabs_voice_id: str = DEFAULTS["elevenlabs_voice_id"]
+    session_size: int = DEFAULTS["session_size"]
+    new_words_per_session: int = DEFAULTS["new_words_per_session"]
+    vocab_files: list[str] = field(default_factory=lambda: list(DEFAULTS["vocab_files"]))
+    audio_cache_dir: str = DEFAULTS["audio_cache_dir"]
+    db_path: str = DEFAULTS["db_path"]
+    ollama_url: str = DEFAULTS["ollama_url"]
+
+    @property
+    def project_root(self) -> Path:
+        return Path(__file__).resolve().parent.parent
+
+    @property
+    def db_full_path(self) -> Path:
+        return self.project_root / self.db_path
+
+    @property
+    def audio_cache_full_path(self) -> Path:
+        return self.project_root / self.audio_cache_dir
+
+    def resolved_vocab_files(self) -> list[Path]:
+        root = self.project_root
+        return [root / f for f in self.vocab_files]
+
+    def to_dict(self) -> dict:
+        return {
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+            "tts_provider": self.tts_provider,
+            "tts_voice": self.tts_voice,
+            "elevenlabs_voice_id": self.elevenlabs_voice_id,
+            "session_size": self.session_size,
+            "new_words_per_session": self.new_words_per_session,
+            "vocab_files": self.vocab_files,
+            "audio_cache_dir": self.audio_cache_dir,
+            "db_path": self.db_path,
+            "ollama_url": self.ollama_url,
+        }
+
+
+def load_settings() -> Settings:
+    if CONFIG_PATH.exists():
+        raw = json.loads(CONFIG_PATH.read_text())
+        known = {f.name for f in Settings.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in raw.items() if k in known}
+        return Settings(**filtered)
+    return Settings()
+
+
+def save_settings(settings: Settings) -> None:
+    CONFIG_PATH.write_text(json.dumps(settings.to_dict(), indent=4) + "\n")

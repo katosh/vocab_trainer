@@ -1,0 +1,13 @@
+{
+    "llm_provider": "ollama",
+    "llm_model": "qwen3:8b",
+    "tts_provider": "edge-tts",
+    "tts_voice": "en-US-GuyNeural",
+    "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
+    "session_size": 30,
+    "new_words_per_session": 10,
+    "vocab_files": [],
+    "audio_cache_dir": "/private/var/folders/h_/5f32jgps7yq4np44vpfbx4300000gn/T/pytest-of-dotto/pytest-15/test_update_settings0/audio",
+    "db_path": "/private/var/folders/h_/5f32jgps7yq4np44vpfbx4300000gn/T/pytest-of-dotto/pytest-15/test_update_settings0/test.db",
+    "ollama_url": "http://localhost:11434"
+}
