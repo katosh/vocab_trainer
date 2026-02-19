@@ -412,22 +412,10 @@ async def api_session_start():
     if not questions_data and not pending_queue:
         return {"error": "No questions available. Import vocabulary and generate questions first.", "session_id": None}
 
-    # Interleave: distribute pending slots evenly among banked questions
-    # so the user always has banked runway while background generates.
-    banked = questions_data
-    final: list[dict] = []
-    bi, pi = 0, 0
-    total = len(banked) + len(pending_queue)
-    for _ in range(total):
-        banked_target = (_ + 1) * len(banked) / total if total else 0
-        if bi < len(banked) and (pi >= len(pending_queue) or bi < banked_target):
-            final.append(banked[bi])
-            bi += 1
-        else:
-            final.append(pending_queue[pi])
-            pi += 1
-    final.extend(banked[bi:])
-    final.extend(pending_queue[pi:])
+    # Banked questions first (shuffled), then pending questions in generation
+    # order. This gives pre-generation maximum lead time: the first pending
+    # question won't be needed until all banked ones are served.
+    final: list[dict] = questions_data + pending_queue
 
     # Store session state
     _active_sessions[session_id] = {
