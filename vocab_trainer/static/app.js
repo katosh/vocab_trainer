@@ -191,7 +191,12 @@ function showQuestion(data) {
         const btn = document.createElement('button');
         btn.className = 'choice-btn';
         btn.innerHTML = `<span class="key">${keys[i]}</span><span>${choice}</span>`;
-        btn.addEventListener('click', () => submitAnswer(i, data));
+        btn.addEventListener('click', (e) => {
+            // Ignore clicks that are actually text selections ending over a button
+            const sel = window.getSelection();
+            if (sel && sel.toString().length > 0) return;
+            submitAnswer(i, data);
+        });
         choicesEl.appendChild(btn);
     });
 

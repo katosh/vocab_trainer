@@ -232,10 +232,21 @@ async def api_session_start():
                     seen_words.add(q["target_word"].lower())
                     new_count += 1
 
+    # 3. Backfill with not-yet-due active questions to fill the session
+    remaining_slots = s.session_size - len(questions_data)
+    if remaining_slots > 0:
+        seen_ids = {q["id"] for q in questions_data if "id" in q}
+        backfill = db.get_backfill_questions(limit=remaining_slots, exclude_ids=seen_ids)
+        for q in backfill:
+            if q["target_word"].lower() not in seen_words:
+                questions_data.append(q)
+                seen_words.add(q["target_word"].lower())
+                review_count += 1
+
     # Shuffle for variety
     random.shuffle(questions_data)
 
-    # 3. Fall back to on-the-fly generation only if both pools are empty
+    # 4. Fall back to on-the-fly generation only if all pools are empty
     if not questions_data:
         targets = select_session_words(db, s.session_size, s.new_words_per_session)
         for word in targets:
