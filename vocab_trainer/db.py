@@ -89,6 +89,21 @@ class Database:
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after initial schema."""
+        cursor = self.conn.execute("PRAGMA table_info(questions)")
+        cols = {row[1] for row in cursor.fetchall()}
+        if "archived" not in cols:
+            self.conn.execute(
+                "ALTER TABLE questions ADD COLUMN archived INTEGER DEFAULT 0"
+            )
+        if "consecutive_correct" not in cols:
+            self.conn.execute(
+                "ALTER TABLE questions ADD COLUMN consecutive_correct INTEGER DEFAULT 0"
+            )
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -202,6 +217,19 @@ class Database:
         row = self.conn.execute("SELECT COUNT(*) FROM questions").fetchone()
         return row[0]
 
+    def get_ready_question_count(self) -> int:
+        """Non-archived questions available for sessions."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE archived = 0"
+        ).fetchone()
+        return row[0]
+
+    def get_archived_question_count(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE archived = 1"
+        ).fetchone()
+        return row[0]
+
     def get_unused_questions(self, limit: int = 10) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM questions WHERE times_shown = 0 ORDER BY RANDOM() LIMIT ?",
@@ -217,7 +245,7 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_session_questions(self, limit: int = 20) -> list[dict]:
-        """Pull banked questions ordered by SRS priority.
+        """Pull non-archived banked questions ordered by SRS priority.
 
         Priority:
         1. Due words the user previously got wrong (struggling)
@@ -240,22 +268,75 @@ class Database:
                 END AS priority
             FROM questions q
             LEFT JOIN reviews r ON q.target_word = r.word
-            WHERE priority < 3
+            WHERE priority < 3 AND q.archived = 0
             ORDER BY priority ASC, q.times_shown ASC, RANDOM()
             LIMIT ?
         """, (now, now, limit)).fetchall()
         return [dict(r) for r in rows]
 
-    def record_question_shown(self, question_id: str, correct: bool) -> None:
+    def record_question_shown(self, question_id: str, correct: bool) -> dict:
+        """Record answer, update streak, auto-archive if mastered.
+
+        Returns {"archived": bool, "reason": str, "question_id": str}.
+        """
+        q = self.conn.execute(
+            "SELECT * FROM questions WHERE id = ?", (question_id,)
+        ).fetchone()
+        if not q:
+            return {"archived": False, "reason": "", "question_id": question_id}
+
+        q = dict(q)
         if correct:
+            new_consec = q.get("consecutive_correct", 0) + 1
             self.conn.execute(
                 "UPDATE questions SET times_shown = times_shown + 1, "
-                "times_correct = times_correct + 1 WHERE id = ?",
-                (question_id,),
+                "times_correct = times_correct + 1, consecutive_correct = ? "
+                "WHERE id = ?",
+                (new_consec, question_id),
             )
         else:
+            new_consec = 0
             self.conn.execute(
-                "UPDATE questions SET times_shown = times_shown + 1 WHERE id = ?",
+                "UPDATE questions SET times_shown = times_shown + 1, "
+                "consecutive_correct = 0 WHERE id = ?",
+                (question_id,),
+            )
+
+        # Archive policy:
+        #   - First encounter + correct → mastered immediately
+        #   - Two consecutive correct (after a prior wrong) → mastered
+        should_archive = False
+        reason = ""
+        if correct:
+            if q["times_shown"] == 0:
+                should_archive = True
+                reason = "Nailed it first try"
+            elif new_consec >= 2:
+                should_archive = True
+                reason = "Correct twice in a row"
+
+        if should_archive:
+            self.conn.execute(
+                "UPDATE questions SET archived = 1 WHERE id = ?",
+                (question_id,),
+            )
+
+        self.conn.commit()
+        return {
+            "archived": should_archive,
+            "reason": reason,
+            "question_id": question_id,
+        }
+
+    def set_question_archived(self, question_id: str, archived: bool) -> None:
+        self.conn.execute(
+            "UPDATE questions SET archived = ? WHERE id = ?",
+            (1 if archived else 0, question_id),
+        )
+        if not archived:
+            # Reset streak when un-archiving so it can be earned again
+            self.conn.execute(
+                "UPDATE questions SET consecutive_correct = 0 WHERE id = ?",
                 (question_id,),
             )
         self.conn.commit()
@@ -405,6 +486,8 @@ class Database:
         reviewed = self.get_reviewed_word_count()
         due = len(self.get_due_words(limit=9999))
         bank = self.get_question_bank_size()
+        ready = self.get_ready_question_count()
+        archived = self.get_archived_question_count()
 
         sessions = self.conn.execute(
             "SELECT COUNT(*) as cnt, COALESCE(SUM(questions_total),0) as total_q, "
@@ -419,6 +502,8 @@ class Database:
             "words_due": due,
             "words_new": word_count - reviewed,
             "question_bank_size": bank,
+            "questions_ready": ready,
+            "questions_archived": archived,
             "total_sessions": sessions["cnt"],
             "total_questions_answered": sessions["total_q"],
             "total_correct": sessions["correct_q"],

@@ -42,7 +42,7 @@
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="stat-bank">—</div>
-                    <div class="stat-label">Question Bank</div>
+                    <div class="stat-label">Ready / Archived</div>
                 </div>
             </div>
 
@@ -88,6 +88,10 @@
                     <div class="explanation" id="explanation"></div>
                     <div class="context-sentence" id="context-sentence"></div>
                     <div class="choice-details" id="choice-details"></div>
+                    <div class="archive-status hidden" id="archive-status">
+                        <span class="archive-text" id="archive-text"></span>
+                        <button class="archive-toggle-btn" id="archive-toggle"></button>
+                    </div>
                     <audio id="tts-audio" hidden></audio>
 
                     <!-- Word chat (LLM tutor) -->
@@ -173,6 +177,11 @@
                     <label for="set-new-words">New Words per Session</label>
                     <input id="set-new-words" type="range" min="0" max="30" value="10">
                     <span id="set-new-words-val">10</span>
+                </div>
+                <div class="form-group">
+                    <label for="set-min-ready">Min Ready Questions (auto-generate buffer)</label>
+                    <input id="set-min-ready" type="range" min="0" max="20" value="3">
+                    <span id="set-min-ready-val">3</span>
                 </div>
                 <button type="submit" class="btn-primary">Save Settings</button>
                 <div id="settings-message" class="message hidden"></div>

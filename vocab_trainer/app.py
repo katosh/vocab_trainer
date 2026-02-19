@@ -1,6 +1,7 @@
 """FastAPI application with all routes."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -65,6 +66,39 @@ def _get_tts():
         from vocab_trainer.providers.tts_piper import PiperTTSProvider
         return PiperTTSProvider()
     raise ValueError(f"Unknown TTS provider: {s.tts_provider}")
+
+
+_bg_generating = False
+_bg_log = logging.getLogger("vocab_trainer.bg")
+
+
+async def _ensure_question_buffer():
+    """Kick off background generation if the non-archived bank is too low."""
+    global _bg_generating
+    if _bg_generating:
+        return
+    db = get_db()
+    s = get_settings()
+    ready = db.get_ready_question_count()
+    if ready >= s.min_ready_questions:
+        return
+    need = s.min_ready_questions - ready
+    _bg_generating = True
+    asyncio.create_task(_generate_in_background(need))
+
+
+async def _generate_in_background(count: int):
+    global _bg_generating
+    try:
+        _bg_log.info("Background generation: creating %d questions", count)
+        db = get_db()
+        llm = _get_llm()
+        questions = await generate_batch(llm, db, count=count)
+        _bg_log.info("Background generation: created %d questions", len(questions))
+    except Exception as e:
+        _bg_log.warning("Background generation failed: %s", e)
+    finally:
+        _bg_generating = False
 
 
 @app.on_event("startup")
@@ -161,9 +195,12 @@ async def api_session_start():
     db = get_db()
     s = get_settings()
 
+    # Start replenishing if needed (runs in background)
+    await _ensure_question_buffer()
+
     session_id = db.start_session()
 
-    # 1. Draw from the question bank (SRS-prioritized)
+    # 1. Draw from the question bank (SRS-prioritized, non-archived)
     banked = db.get_session_questions(limit=s.session_size)
     questions_data = list(banked)
     seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
@@ -225,10 +262,11 @@ async def api_session_answer(request: Request):
     if correct:
         session["correct"] += 1
 
-    # Record in DB
+    # Record in DB + archive decision
     db = get_db()
+    archive_info = {"archived": False, "reason": "", "question_id": ""}
     if current_q.get("id"):
-        db.record_question_shown(current_q["id"], correct)
+        archive_info = db.record_question_shown(current_q["id"], correct)
 
     # SRS update
     quality = quality_from_answer(correct, time_seconds)
@@ -247,6 +285,9 @@ async def api_session_answer(request: Request):
     except Exception:
         pass
 
+    # Check if we need to replenish the question buffer
+    await _ensure_question_buffer()
+
     result = {
         "correct": correct,
         "correct_index": current_q["correct_index"],
@@ -254,6 +295,7 @@ async def api_session_answer(request: Request):
         "explanation": current_q["explanation"],
         "context_sentence": current_q["context_sentence"],
         "audio_hash": audio_hash,
+        "archive": archive_info,
         "session_progress": {
             "answered": session["total"],
             "correct": session["correct"],
@@ -397,6 +439,19 @@ async def api_session_summary():
     db = get_db()
     history = db.get_session_history(limit=10)
     return {"sessions": history}
+
+
+# ── API: Question archive override ──────────────────────────────────────
+
+@app.post("/api/question/{question_id}/archive")
+async def api_question_archive(question_id: str, request: Request):
+    body = await request.json()
+    archived = body.get("archived", True)
+    db = get_db()
+    db.set_question_archived(question_id, archived)
+    # Replenish buffer if un-archiving reduced nothing, but archiving might
+    await _ensure_question_buffer()
+    return {"question_id": question_id, "archived": archived}
 
 
 # ── API: Audio ────────────────────────────────────────────────────────────

@@ -396,6 +396,50 @@ nav {
     cursor: not-allowed;
 }
 
+/* Archive status */
+.archive-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 8px 14px;
+    margin-bottom: 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+.archive-status.archived {
+    background: rgba(76, 175, 80, 0.1);
+}
+
+.archive-status.kept {
+    background: rgba(108, 140, 255, 0.06);
+}
+
+.archive-text {
+    color: var(--text-dim);
+}
+
+.archive-text strong {
+    color: var(--text);
+}
+
+.archive-toggle-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.archive-toggle-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 /* Word Chat (LLM tutor) */
 .word-chat {
     margin-top: 16px;

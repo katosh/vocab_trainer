@@ -21,7 +21,7 @@ class TestSettings:
         d = s.to_dict()
         assert d["llm_provider"] == "ollama"
         assert isinstance(d["vocab_files"], list)
-        assert len(d) == 11  # all fields present
+        assert len(d) == 12  # all fields present
 
     def test_to_dict_roundtrip(self):
         s = Settings(llm_provider="anthropic", session_size=30)

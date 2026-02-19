@@ -33,7 +33,8 @@ async function refreshStats() {
         document.getElementById('stat-due').textContent = stats.words_due;
         document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
         document.getElementById('stat-sessions').textContent = stats.total_sessions;
-        document.getElementById('stat-bank').textContent = stats.question_bank_size;
+        document.getElementById('stat-bank').textContent =
+            stats.questions_ready + ' / ' + stats.questions_archived;
     } catch (e) {
         console.error('Failed to load stats:', e);
     }
@@ -130,11 +131,12 @@ function showQuestion(data) {
     showQuizState('question');
     document.getElementById('answer-reveal').classList.add('hidden');
 
-    // Reset chat state
+    // Reset chat and archive state
     chatHistory = [];
     currentQuestionContext = null;
     document.getElementById('chat-messages').innerHTML = '';
     document.getElementById('chat-input').value = '';
+    document.getElementById('archive-status').classList.add('hidden');
 
     // Progress
     const progress = data.progress;
@@ -237,6 +239,27 @@ async function submitAnswer(selectedIndex, questionData) {
             detailsEl.appendChild(item);
         });
 
+        // Show archive decision with override
+        const archiveEl = document.getElementById('archive-status');
+        const archiveText = document.getElementById('archive-text');
+        const archiveToggle = document.getElementById('archive-toggle');
+        if (result.archive && result.archive.question_id) {
+            archiveEl.classList.remove('hidden', 'archived', 'kept');
+            if (result.archive.archived) {
+                archiveEl.classList.add('archived');
+                archiveText.innerHTML = `<strong>Archived</strong> — ${result.archive.reason}`;
+                archiveToggle.textContent = 'Keep in rotation';
+                archiveToggle.onclick = () => toggleArchive(result.archive.question_id, false);
+            } else {
+                archiveEl.classList.add('kept');
+                archiveText.innerHTML = '<strong>In rotation</strong> — still practising';
+                archiveToggle.textContent = 'Archive';
+                archiveToggle.onclick = () => toggleArchive(result.archive.question_id, true);
+            }
+        } else {
+            archiveEl.classList.add('hidden');
+        }
+
         // Store context for chat
         currentQuestionContext = {
             question_type: questionData.question_type,
@@ -278,6 +301,29 @@ async function submitAnswer(selectedIndex, questionData) {
         };
     } catch (e) {
         console.error('Answer submission failed:', e);
+    }
+}
+
+async function toggleArchive(questionId, archived) {
+    try {
+        await api(`/api/question/${questionId}/archive`, 'POST', { archived });
+        const archiveEl = document.getElementById('archive-status');
+        const archiveText = document.getElementById('archive-text');
+        const archiveToggle = document.getElementById('archive-toggle');
+        archiveEl.classList.remove('archived', 'kept');
+        if (archived) {
+            archiveEl.classList.add('archived');
+            archiveText.innerHTML = '<strong>Archived</strong> — manually archived';
+            archiveToggle.textContent = 'Keep in rotation';
+            archiveToggle.onclick = () => toggleArchive(questionId, false);
+        } else {
+            archiveEl.classList.add('kept');
+            archiveText.innerHTML = '<strong>In rotation</strong> — restored';
+            archiveToggle.textContent = 'Archive';
+            archiveToggle.onclick = () => toggleArchive(questionId, true);
+        }
+    } catch (e) {
+        console.error('Archive toggle failed:', e);
     }
 }
 
@@ -497,6 +543,8 @@ async function loadSettings() {
         document.getElementById('set-session-size-val').textContent = s.session_size;
         document.getElementById('set-new-words').value = s.new_words_per_session;
         document.getElementById('set-new-words-val').textContent = s.new_words_per_session;
+        document.getElementById('set-min-ready').value = s.min_ready_questions;
+        document.getElementById('set-min-ready-val').textContent = s.min_ready_questions;
     } catch (e) {
         console.error('Failed to load settings:', e);
     }
@@ -510,6 +558,10 @@ document.getElementById('set-new-words').addEventListener('input', (e) => {
     document.getElementById('set-new-words-val').textContent = e.target.value;
 });
 
+document.getElementById('set-min-ready').addEventListener('input', (e) => {
+    document.getElementById('set-min-ready-val').textContent = e.target.value;
+});
+
 document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
@@ -520,6 +572,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
             tts_voice: document.getElementById('set-tts-voice').value,
             session_size: parseInt(document.getElementById('set-session-size').value),
             new_words_per_session: parseInt(document.getElementById('set-new-words').value),
+            min_ready_questions: parseInt(document.getElementById('set-min-ready').value),
         });
         showMessage('settings-message', 'Settings saved.', 'success');
     } catch (e) {
