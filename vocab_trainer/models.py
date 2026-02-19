@@ -24,6 +24,7 @@ class DistinctionCluster:
     preamble: str
     entries: list[DistinctionEntry]
     commentary: str
+    source_file: str = ""
 
 
 @dataclass

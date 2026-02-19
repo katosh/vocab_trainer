@@ -5,10 +5,10 @@
     "tts_voice": "en-US-GuyNeural",
     "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
     "session_size": 20,
-    "new_words_per_session": 11,
     "vocab_files": [
         "../vocabulary.md",
-        "../vocabulary_distinctions.md"
+        "../vocabulary_distinctions.md",
+        "../vocabulary_upper_intermediate_unknown.md"
     ],
     "audio_cache_dir": "audio_cache",
     "db_path": "progress.db",

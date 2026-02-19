@@ -90,15 +90,14 @@ def record_review(db: Database, word: str, quality: int) -> None:
 def select_session_words(
     db: Database,
     session_size: int = 20,
-    new_word_limit: int = 10,
 ) -> list[str]:
-    """Select words for a training session.
+    """Select words for a training session (on-the-fly fallback).
 
     Only selects words that are in clusters (can generate questions).
 
     Priority:
     1. Overdue cluster words (sorted by staleness — most overdue first)
-    2. New cluster words (never reviewed) up to new_word_limit
+    2. New cluster words (never reviewed)
     """
     words: list[str] = []
 
@@ -110,7 +109,7 @@ def select_session_words(
             return words
 
     # 2. New cluster words
-    remaining = min(new_word_limit, session_size - len(words))
+    remaining = session_size - len(words)
     if remaining > 0:
         new = db.get_new_cluster_words(limit=remaining)
         for w in new:

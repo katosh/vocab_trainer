@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS clusters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL UNIQUE,
     preamble TEXT,
-    commentary TEXT
+    commentary TEXT,
+    source_file TEXT
 );
 
 CREATE TABLE IF NOT EXISTS cluster_words (
@@ -75,6 +76,11 @@ CREATE TABLE IF NOT EXISTS audio_cache (
     tts_provider TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS file_mtimes (
+    file_path TEXT PRIMARY KEY,
+    mtime_ns INTEGER NOT NULL
+);
 """
 
 
@@ -107,6 +113,13 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE questions ADD COLUMN choice_explanations_json TEXT DEFAULT '[]'"
             )
+        # clusters.source_file
+        cursor = self.conn.execute("PRAGMA table_info(clusters)")
+        cluster_cols = {row[1] for row in cursor.fetchall()}
+        if "source_file" not in cluster_cols:
+            self.conn.execute(
+                "ALTER TABLE clusters ADD COLUMN source_file TEXT"
+            )
         self.conn.commit()
 
     def close(self) -> None:
@@ -114,11 +127,33 @@ class Database:
 
     # ── Import ────────────────────────────────────────────────────────────
 
+    def delete_words_by_source(self, source_file: str) -> int:
+        """Remove all words originally imported from *source_file*."""
+        cur = self.conn.execute(
+            "DELETE FROM words WHERE source_file = ?", (source_file,)
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def delete_clusters_by_source(self, source_file: str) -> int:
+        """Remove clusters (and their entries) from *source_file*."""
+        ids = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT id FROM clusters WHERE source_file = ?", (source_file,)
+            ).fetchall()
+        ]
+        for cid in ids:
+            self.conn.execute("DELETE FROM cluster_words WHERE cluster_id = ?", (cid,))
+        self.conn.execute("DELETE FROM clusters WHERE source_file = ?", (source_file,))
+        self.conn.commit()
+        return len(ids)
+
     def import_words(self, words: list[VocabWord]) -> int:
         count = 0
         for w in words:
             self.conn.execute(
-                "INSERT OR REPLACE INTO words (word, definition, section, source_file) "
+                "INSERT OR IGNORE INTO words (word, definition, section, source_file) "
                 "VALUES (?, ?, ?, ?)",
                 (w.word, w.definition, w.section, w.source_file),
             )
@@ -130,9 +165,9 @@ class Database:
         count = 0
         for c in clusters:
             cur = self.conn.execute(
-                "INSERT OR REPLACE INTO clusters (title, preamble, commentary) "
-                "VALUES (?, ?, ?)",
-                (c.title, c.preamble, c.commentary),
+                "INSERT OR REPLACE INTO clusters (title, preamble, commentary, source_file) "
+                "VALUES (?, ?, ?, ?)",
+                (c.title, c.preamble, c.commentary, c.source_file),
             )
             cluster_id = cur.lastrowid
             # Clear old entries for this cluster
@@ -149,11 +184,26 @@ class Database:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO words (word, definition, section, source_file) "
                     "VALUES (?, ?, ?, ?)",
-                    (e.word, e.meaning, c.title, "vocabulary_distinctions.md"),
+                    (e.word, e.meaning, c.title, c.source_file),
                 )
             count += 1
         self.conn.commit()
         return count
+
+    # ── File mtimes ─────────────────────────────────────────────────────
+
+    def get_file_mtime(self, file_path: str) -> int | None:
+        row = self.conn.execute(
+            "SELECT mtime_ns FROM file_mtimes WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_file_mtime(self, file_path: str, mtime_ns: int) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO file_mtimes (file_path, mtime_ns) VALUES (?, ?)",
+            (file_path, mtime_ns),
+        )
+        self.conn.commit()
 
     # ── Words ─────────────────────────────────────────────────────────────
 

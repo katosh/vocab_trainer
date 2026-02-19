@@ -146,7 +146,6 @@ class TestSessionAPI:
     def test_start_session_with_pregenerated(self, test_app_with_data):
         client, db, settings = test_app_with_data
         settings.session_size = 1
-        settings.new_words_per_session = 1
 
         resp = client.post("/api/session/start")
         assert resp.status_code == 200

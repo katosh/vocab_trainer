@@ -16,6 +16,7 @@ from vocab_trainer.models import DistinctionCluster, DistinctionEntry
 
 def parse_distinctions_file(path: Path) -> list[DistinctionCluster]:
     text = path.read_text()
+    source = path.name
     clusters: list[DistinctionCluster] = []
 
     # Split on horizontal rules to get per-cluster blocks
@@ -24,6 +25,7 @@ def parse_distinctions_file(path: Path) -> list[DistinctionCluster]:
     for block in blocks:
         cluster = _parse_block(block.strip())
         if cluster and cluster.entries:
+            cluster.source_file = source
             clusters.append(cluster)
 
     return clusters

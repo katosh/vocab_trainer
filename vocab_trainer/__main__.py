@@ -143,16 +143,19 @@ def _import_vocab():
             continue
         print(f"  Parsing: {vf.name}")
         if "distinctions" in vf.name:
+            db.delete_clusters_by_source(vf.name)
             clusters = parse_distinctions_file(vf)
             n = db.import_clusters(clusters)
             total_clusters += n
             entries = sum(len(c.entries) for c in clusters)
             print(f"    {n} clusters, {entries} entries")
         else:
+            db.delete_words_by_source(vf.name)
             words = parse_vocabulary_file(vf)
             n = db.import_words(words)
             total_words += n
             print(f"    {n} words")
+        db.set_file_mtime(str(vf), vf.stat().st_mtime_ns)
 
     print(f"\nTotal in DB: {db.get_word_count()} words, {db.get_cluster_count()} clusters")
     db.close()

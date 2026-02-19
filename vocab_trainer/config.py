@@ -13,8 +13,7 @@ DEFAULTS = {
     "tts_voice": "en-US-GuyNeural",
     "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
     "session_size": 20,
-    "new_words_per_session": 10,
-    "vocab_files": ["../vocabulary.md", "../vocabulary_distinctions.md"],
+    "vocab_files": ["../vocabulary.md", "../vocabulary_distinctions.md", "../vocabulary_upper_intermediate_unknown.md"],
     "audio_cache_dir": "audio_cache",
     "db_path": "progress.db",
     "ollama_url": "http://localhost:11434",
@@ -32,7 +31,6 @@ class Settings:
     tts_voice: str = DEFAULTS["tts_voice"]
     elevenlabs_voice_id: str = DEFAULTS["elevenlabs_voice_id"]
     session_size: int = DEFAULTS["session_size"]
-    new_words_per_session: int = DEFAULTS["new_words_per_session"]
     vocab_files: list[str] = field(default_factory=lambda: list(DEFAULTS["vocab_files"]))
     audio_cache_dir: str = DEFAULTS["audio_cache_dir"]
     db_path: str = DEFAULTS["db_path"]
@@ -65,7 +63,6 @@ class Settings:
             "tts_voice": self.tts_voice,
             "elevenlabs_voice_id": self.elevenlabs_voice_id,
             "session_size": self.session_size,
-            "new_words_per_session": self.new_words_per_session,
             "vocab_files": self.vocab_files,
             "audio_cache_dir": self.audio_cache_dir,
             "db_path": self.db_path,

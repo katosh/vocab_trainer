@@ -108,6 +108,30 @@ async def _generate_in_background(count: int):
         await _ensure_question_buffer()
 
 
+def _auto_import_if_changed(db: Database, settings: Settings) -> None:
+    """Re-import vocab files whose mtime has changed since the last import."""
+    log = logging.getLogger("auto-import")
+    for vf in settings.resolved_vocab_files():
+        if not vf.exists():
+            continue
+        current_mtime = vf.stat().st_mtime_ns
+        stored_mtime = db.get_file_mtime(str(vf))
+        if stored_mtime == current_mtime:
+            continue
+        log.info("Changed: %s — re-importing", vf.name)
+        if "distinctions" in vf.name:
+            db.delete_clusters_by_source(vf.name)
+            clusters = parse_distinctions_file(vf)
+            n = db.import_clusters(clusters)
+            log.info("  %d clusters imported", n)
+        else:
+            db.delete_words_by_source(vf.name)
+            words = parse_vocabulary_file(vf)
+            n = db.import_words(words)
+            log.info("  %d words imported", n)
+        db.set_file_mtime(str(vf), current_mtime)
+
+
 @app.on_event("startup")
 async def startup():
     global _db, _settings
@@ -115,6 +139,7 @@ async def startup():
         return  # Already initialized (e.g. by tests)
     _settings = load_settings()
     _db = Database(_settings.db_full_path)
+    _auto_import_if_changed(_db, _settings)
     await _ensure_question_buffer()
 
 
@@ -167,11 +192,14 @@ async def api_import():
         if not vf.exists():
             continue
         if "distinctions" in vf.name:
+            db.delete_clusters_by_source(vf.name)
             clusters = parse_distinctions_file(vf)
             total_clusters += db.import_clusters(clusters)
         else:
+            db.delete_words_by_source(vf.name)
             words = parse_vocabulary_file(vf)
             total_words += db.import_words(words)
+        db.set_file_mtime(str(vf), vf.stat().st_mtime_ns)
 
     return {
         "words_imported": total_words,
@@ -223,7 +251,7 @@ async def api_session_start():
     if remaining_slots > 0:
         active_count = db.get_active_word_count()
         room = max(0, s.max_active_words - active_count)
-        new_limit = min(room, s.new_words_per_session, remaining_slots)
+        new_limit = min(room, remaining_slots)
         if new_limit > 0:
             new_qs = db.get_new_questions(limit=new_limit)
             for q in new_qs:
@@ -248,7 +276,7 @@ async def api_session_start():
 
     # 4. Fall back to on-the-fly generation only if all pools are empty
     if not questions_data:
-        targets = select_session_words(db, s.session_size, s.new_words_per_session)
+        targets = select_session_words(db, s.session_size)
         for word in targets:
             if word.lower() in seen_words:
                 continue
@@ -316,16 +344,22 @@ async def api_session_answer(request: Request):
             current_q["id"], correct, s.archive_interval_days
         )
 
-    # Generate TTS for the context sentence
-    audio_hash = None
+    # Generate TTS for explanation + context sentence
+    explanation_audio_hash = None
+    context_audio_hash = None
     try:
         tts = _get_tts()
         s = get_settings()
-        audio_path = await get_or_create_audio(
-            current_q["context_sentence"], tts, db, s.audio_cache_full_path
-        )
-        if audio_path:
-            audio_hash = sentence_hash(current_q["context_sentence"])
+        for text, attr in [
+            (current_q["explanation"], "explanation_audio_hash"),
+            (current_q["context_sentence"], "context_audio_hash"),
+        ]:
+            path = await get_or_create_audio(text, tts, db, s.audio_cache_full_path)
+            if path:
+                if attr == "explanation_audio_hash":
+                    explanation_audio_hash = sentence_hash(text)
+                else:
+                    context_audio_hash = sentence_hash(text)
     except Exception:
         pass
 
@@ -338,7 +372,8 @@ async def api_session_answer(request: Request):
         "correct_word": current_q["correct_word"],
         "explanation": current_q["explanation"],
         "context_sentence": current_q["context_sentence"],
-        "audio_hash": audio_hash,
+        "explanation_audio_hash": explanation_audio_hash,
+        "context_audio_hash": context_audio_hash,
         "archive": archive_info,
         "session_progress": {
             "answered": session["total"],

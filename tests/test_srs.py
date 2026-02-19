@@ -131,21 +131,21 @@ class TestRecordReview:
 
 class TestSelectSessionWords:
     def test_all_new_words(self, populated_db):
-        words = select_session_words(populated_db, session_size=5, new_word_limit=10)
+        words = select_session_words(populated_db, session_size=5)
         assert len(words) <= 5
         assert len(words) > 0
 
     def test_respects_session_size(self, populated_db):
-        words = select_session_words(populated_db, session_size=3, new_word_limit=10)
+        words = select_session_words(populated_db, session_size=3)
         assert len(words) <= 3
 
     def test_due_words_prioritized(self, populated_db):
         # Mark "concise" as due
         populated_db.upsert_review("concise", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True)
-        words = select_session_words(populated_db, session_size=5, new_word_limit=3)
+        words = select_session_words(populated_db, session_size=5)
         assert "concise" in words
 
-    def test_new_word_limit(self, populated_db):
-        words = select_session_words(populated_db, session_size=100, new_word_limit=2)
-        # Should be at most 2 (no due words, so only new words up to limit)
-        assert len(words) <= 2
+    def test_fills_with_new_words(self, populated_db):
+        words = select_session_words(populated_db, session_size=100)
+        # Should get all available cluster words (no cap beyond session_size)
+        assert len(words) > 0

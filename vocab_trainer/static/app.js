@@ -304,10 +304,23 @@ async function submitAnswer(selectedIndex, questionData) {
             choice_details: questionData.choice_details || [],
         };
 
-        // Audio
-        if (result.audio_hash) {
-            const audio = document.getElementById('tts-audio');
-            audio.src = `/api/audio/${result.audio_hash}.mp3`;
+        // Audio: explanation → pause → context sentence
+        const audio = document.getElementById('tts-audio');
+        if (result.explanation_audio_hash) {
+            audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
+            audio.hidden = false;
+            audio.onended = () => {
+                if (result.context_audio_hash) {
+                    setTimeout(() => {
+                        audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
+                        audio.onended = null;
+                        audio.play().catch(() => {});
+                    }, 800);
+                }
+            };
+            audio.play().catch(() => {});
+        } else if (result.context_audio_hash) {
+            audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
             audio.hidden = false;
             audio.play().catch(() => {});
         }
@@ -623,8 +636,6 @@ async function loadSettings() {
         document.getElementById('set-tts-voice').value = s.tts_voice;
         document.getElementById('set-session-size').value = s.session_size;
         document.getElementById('set-session-size-val').textContent = s.session_size;
-        document.getElementById('set-new-words').value = s.new_words_per_session;
-        document.getElementById('set-new-words-val').textContent = s.new_words_per_session;
         document.getElementById('set-min-ready').value = s.min_ready_questions;
         document.getElementById('set-min-ready-val').textContent = s.min_ready_questions;
         document.getElementById('set-max-active').value = s.max_active_words;
@@ -638,10 +649,6 @@ async function loadSettings() {
 
 document.getElementById('set-session-size').addEventListener('input', (e) => {
     document.getElementById('set-session-size-val').textContent = e.target.value;
-});
-
-document.getElementById('set-new-words').addEventListener('input', (e) => {
-    document.getElementById('set-new-words-val').textContent = e.target.value;
 });
 
 document.getElementById('set-min-ready').addEventListener('input', (e) => {
@@ -665,7 +672,6 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
             tts_provider: document.getElementById('set-tts').value,
             tts_voice: document.getElementById('set-tts-voice').value,
             session_size: parseInt(document.getElementById('set-session-size').value),
-            new_words_per_session: parseInt(document.getElementById('set-new-words').value),
             min_ready_questions: parseInt(document.getElementById('set-min-ready').value),
             max_active_words: parseInt(document.getElementById('set-max-active').value),
             archive_interval_days: parseInt(document.getElementById('set-archive-interval').value),
