@@ -807,14 +807,12 @@ def _build_chat_prompt(context: dict, history: list[dict], message: str) -> tupl
                 sys_lines.append(line)
 
     sys_lines.append("")
-    sys_lines.append("Guidelines:")
-    sys_lines.append("- Be concise and educational. Focus on nuances between near-synonyms.")
-    sys_lines.append("- Use concrete example sentences to illustrate.")
-    sys_lines.append("- Write in flowing conversational prose — your output will be narrated aloud via TTS, so never use tables, bullet points, or numbered lists.")
+    sys_lines.append("Be concise and educational. Focus on nuances between near-synonyms.")
+    sys_lines.append("Use concrete example sentences to illustrate.")
     if was_correct is False:
-        sys_lines.append("- The student got this wrong. Address why their choice was incorrect and clarify the distinction they missed.")
+        sys_lines.append("The student got this wrong. Address why their choice was incorrect and clarify the distinction they missed.")
     elif was_correct is True:
-        sys_lines.append("- The student answered correctly. Skip praise and get straight to the substance.")
+        sys_lines.append("The student answered correctly. Skip praise and get straight to the substance.")
 
     system = "\n".join(sys_lines)
 

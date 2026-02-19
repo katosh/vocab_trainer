@@ -518,7 +518,7 @@ const CHAT_PROMPTS = {
     etymology:
         'Explain the etymology and deeper meaning of "{word}". Include its roots (Latin, Greek, etc.), how the meaning evolved, and any interesting historical context.',
     compare:
-        'Compare all four choices. For each word, explain what it means, when you\'d use it vs the others, and give 2 example sentences.',
+        'The sentence was: "{stem}"\nI chose "{chosen}" — {result}.\n\nCompare all four choices ({choices}). For each word, explain what it means, when you\'d use it vs the others, and give 2 example sentences. Write in flowing conversational prose — no tables, no bullet points, no numbered lists.',
 };
 
 let selectedComplexity = localStorage.getItem('contextLevel') || 'simple';
@@ -543,7 +543,17 @@ document.querySelectorAll('.chat-btn').forEach(btn => {
         if (chatStreaming || !currentQuestionContext) return;
         const action = btn.dataset.action;
         if (action === 'compare') {
-            sendChatMessage(CHAT_PROMPTS.compare);
+            const ctx = currentQuestionContext;
+            const chosen = ctx.choices[ctx.selected_index];
+            const resultText = ctx.was_correct
+                ? 'correct'
+                : `wrong, the answer was "${ctx.correct_word}"`;
+            const message = CHAT_PROMPTS.compare
+                .replace('{stem}', ctx.stem)
+                .replace('{chosen}', chosen)
+                .replace('{result}', resultText)
+                .replace('{choices}', ctx.choices.join(', '));
+            sendChatMessage(message);
         }
     });
 });
@@ -725,6 +735,7 @@ class NarrationQueue {
             .replace(/^\s*\d+\.\s+/gm, '')    // numbered lists
             .replace(/\|/g, ', ')              // table pipes
             .replace(/^[\s:_-]+$/gm, '')       // table dividers / horizontal rules
+            .replace(/[*_]/g, '')              // remaining markdown emphasis chars
             .replace(/\n/g, ' ')
             .replace(/\s{2,}/g, ' ')
             .trim();
