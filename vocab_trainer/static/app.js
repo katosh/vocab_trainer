@@ -553,13 +553,16 @@ const CHAT_PROMPTS = {
 };
 
 function buildAutoCompareMessage(questionData, selectedIndex, correct) {
-    let msg = CHAT_PROMPTS.compare.replace(
-        '{choices}', questionData.choices.join(', '));
-    if (correct) {
-        msg += `\n\nThe student correctly chose "${questionData.choices[selectedIndex]}". Affirm the choice briefly, then contrast with the alternatives.`;
-    } else {
-        msg += `\n\nThe student incorrectly chose "${questionData.choices[selectedIndex]}" instead of "${questionData.choices[questionData.correct_index]}". Explain why the correct answer fits better and why the student's choice doesn't work here.`;
-    }
+    const chosen = questionData.choices[selectedIndex];
+    const correctWord = questionData.choices[questionData.correct_index];
+    const allChoices = questionData.choices.join(', ');
+
+    let msg = correct
+        ? `I chose "${chosen}" and got it right.`
+        : `I chose "${chosen}" but the correct answer was "${correctWord}".`;
+    msg += ` The choices were: ${allChoices}.`;
+    msg += `\n\nExplain why "${correctWord}" is the best fit here, then walk through each of the four words — what it means, when you'd typically use it, and give 2 example sentences for each. Write in flowing conversational prose — no tables, no bullet points, no markdown — this will be narrated aloud.`;
+
     return msg;
 }
 
@@ -700,6 +703,7 @@ class NarrationQueue {
 
     _extractSentences() {
         while (true) {
+            // Paragraph break
             const paraIdx = this.buffer.indexOf('\n\n');
             if (paraIdx > 0) {
                 const sentence = this.buffer.slice(0, paraIdx).trim();
@@ -707,8 +711,19 @@ class NarrationQueue {
                 if (sentence) this._enqueueSentence(sentence);
                 continue;
             }
+            // Single newline — catches line-based output (lists, tables)
             if (this.buffer.length > 20) {
-                const match = this.buffer.match(/([.!?:])(\s)/);
+                const nlIdx = this.buffer.indexOf('\n');
+                if (nlIdx > 0) {
+                    const sentence = this.buffer.slice(0, nlIdx).trim();
+                    this.buffer = this.buffer.slice(nlIdx + 1);
+                    if (sentence) this._enqueueSentence(sentence);
+                    continue;
+                }
+            }
+            // Sentence-ending punctuation followed by whitespace
+            if (this.buffer.length > 20) {
+                const match = this.buffer.match(/([.!?])(\s)/);
                 if (match) {
                     const endIdx = match.index + 1;
                     const sentence = this.buffer.slice(0, endIdx).trim();
@@ -746,9 +761,14 @@ class NarrationQueue {
             .replace(/\*(.+?)\*/g, '$1')
             .replace(/`(.+?)`/g, '$1')
             .replace(/^#+\s*/gm, '')
+            .replace(/^\s*[-*]\s+/gm, '')     // list markers
+            .replace(/^\s*\d+\.\s+/gm, '')    // numbered lists
+            .replace(/\|/g, ', ')              // table pipes
+            .replace(/^[\s:_-]+$/gm, '')       // table dividers / horizontal rules
             .replace(/\n/g, ' ')
+            .replace(/\s{2,}/g, ' ')
             .trim();
-        if (!clean) return;
+        if (!clean || clean.length < 3) return;
         const index = this.sentences.length;
         this.sentences.push({ text: clean, audio: null, ready: false, failed: false });
         this._generateAudio(index, clean);
