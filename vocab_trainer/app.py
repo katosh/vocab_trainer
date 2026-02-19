@@ -770,6 +770,16 @@ def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
         )
 
     lines.append(f"Correct answer: {context.get('correct_word', '')}")
+
+    selected_idx = context.get("selected_index")
+    was_correct = context.get("was_correct")
+    if selected_idx is not None and choices:
+        chosen = choices[selected_idx] if selected_idx < len(choices) else "?"
+        if was_correct:
+            lines.append(f"Student chose: {chosen} (correct)")
+        else:
+            lines.append(f"Student chose: {chosen} (wrong)")
+
     lines.append(f"Explanation: {context.get('explanation', '')}")
     lines.append(f"Context sentence: {context.get('context_sentence', '')}")
 
@@ -784,12 +794,16 @@ def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
                     line += f" ({d['distinction']})"
                 lines.append(line)
 
-    lines += [
-        "",
-        "Be concise and educational. Focus on nuances between near-synonyms.",
-        "Use concrete example sentences to illustrate. Format with markdown.",
-        "",
-    ]
+    lines.append("")
+    lines.append("Guidelines:")
+    lines.append("- Be concise and educational. Focus on nuances between near-synonyms.")
+    lines.append("- Use concrete example sentences to illustrate.")
+    lines.append("- Write in flowing conversational prose — your output may be narrated aloud via TTS, so avoid tables, bullet points, and numbered lists.")
+    if was_correct is False:
+        lines.append("- The student got this wrong. Address why their choice was incorrect and clarify the distinction they missed.")
+    elif was_correct is True:
+        lines.append("- The student answered correctly. Skip praise and get straight to the substance.")
+    lines.append("")
 
     # Append conversation history
     for msg in history:
