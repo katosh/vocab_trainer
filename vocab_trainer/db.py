@@ -445,6 +445,41 @@ class Database:
         )
         self.conn.commit()
 
+    def get_active_questions(self) -> list[dict]:
+        """Active (non-archived) questions that have been shown at least once, with SRS info."""
+        rows = self.conn.execute("""
+            SELECT q.id, q.target_word, q.question_type, q.stem, q.cluster_title,
+                   q.times_shown, q.times_correct,
+                   r.interval_days, r.next_review, r.easiness_factor
+            FROM questions q
+            LEFT JOIN reviews r ON LOWER(q.target_word) = LOWER(r.word)
+            WHERE q.archived = 0 AND q.times_shown > 0
+            ORDER BY r.next_review ASC
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_archived_questions(self) -> list[dict]:
+        """Archived questions with SRS info, most-recently-reviewed first."""
+        rows = self.conn.execute("""
+            SELECT q.id, q.target_word, q.question_type, q.stem, q.cluster_title,
+                   q.times_shown, q.times_correct,
+                   r.interval_days, r.next_review, r.easiness_factor
+            FROM questions q
+            LEFT JOIN reviews r ON LOWER(q.target_word) = LOWER(r.word)
+            WHERE q.archived = 1
+            ORDER BY r.last_review DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def reset_word_due(self, word: str) -> None:
+        """Reset SRS for a word so it becomes due immediately."""
+        self.conn.execute(
+            "UPDATE reviews SET next_review = datetime('now'), interval_days = 1.0, repetitions = 0 "
+            "WHERE LOWER(word) = LOWER(?)",
+            (word,),
+        )
+        self.conn.commit()
+
     # ── Reviews (SRS) ─────────────────────────────────────────────────────
 
     def get_review(self, word: str) -> dict | None:

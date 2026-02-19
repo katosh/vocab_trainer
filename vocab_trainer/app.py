@@ -676,6 +676,28 @@ async def api_question_archive(question_id: str, request: Request):
     return {"question_id": question_id, "archived": archived}
 
 
+# ── API: Question library ─────────────────────────────────────────────────
+
+@app.get("/api/questions/active")
+async def api_questions_active():
+    return get_db().get_active_questions()
+
+
+@app.get("/api/questions/archived")
+async def api_questions_archived():
+    return get_db().get_archived_questions()
+
+
+@app.post("/api/questions/reset-due")
+async def api_questions_reset_due(request: Request):
+    body = await request.json()
+    word = body.get("word", "")
+    if not word:
+        raise HTTPException(400, "No word provided")
+    get_db().reset_word_due(word)
+    return {"ok": True}
+
+
 # ── API: Audio ────────────────────────────────────────────────────────────
 
 @app.get("/api/audio/{audio_hash}.mp3")

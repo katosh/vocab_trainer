@@ -826,6 +826,135 @@ nav {
     text-align: left;
 }
 
+/* Library */
+.library-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 4px;
+    margin-bottom: 16px;
+}
+
+.library-tab {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.library-tab:hover { color: var(--text); }
+.library-tab.active {
+    background: var(--accent);
+    color: white;
+}
+
+.library-empty {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 40px 20px;
+    font-size: 0.9rem;
+}
+
+.question-list-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    transition: border-color 0.15s;
+}
+
+.question-list-item:hover {
+    border-color: var(--accent);
+}
+
+.qli-header {
+    cursor: pointer;
+}
+
+.qli-word-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+
+.qli-word {
+    font-size: 1.05rem;
+    color: var(--text);
+}
+
+.qli-cluster {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+}
+
+.qli-stats {
+    display: flex;
+    gap: 12px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+.qli-srs {
+    color: var(--accent);
+}
+
+.qli-srs.due-now {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.qli-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.qli-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 3px 12px;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.qli-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.qli-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.qli-stems {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+.qli-stem {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    padding: 4px 0;
+    line-height: 1.5;
+}
+
+.question-list-item.expanded {
+    border-color: var(--accent);
+}
+
 /* Responsive */
 @media (max-width: 480px) {
     .stats-grid { grid-template-columns: repeat(2, 1fr); }

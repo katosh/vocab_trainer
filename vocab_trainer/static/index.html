@@ -13,6 +13,7 @@
             <nav>
                 <button class="nav-btn active" data-view="dashboard">Dashboard</button>
                 <button class="nav-btn" data-view="quiz">Quiz</button>
+                <button class="nav-btn" data-view="library">Library</button>
                 <button class="nav-btn" data-view="settings">Settings</button>
             </nav>
         </header>
@@ -157,6 +158,16 @@
                 <button id="btn-new-session" class="btn-primary btn-large">New Session</button>
                 <button id="btn-back-dashboard" class="btn-secondary">Back to Dashboard</button>
             </div>
+        </section>
+
+        <!-- Library View -->
+        <section id="view-library" class="view">
+            <div class="library-tabs">
+                <button class="library-tab active" data-tab="active">In Rotation</button>
+                <button class="library-tab" data-tab="archived">Archived</button>
+            </div>
+            <div id="library-active" class="library-panel"></div>
+            <div id="library-archived" class="library-panel hidden"></div>
         </section>
 
         <!-- Settings View -->

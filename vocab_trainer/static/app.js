@@ -32,6 +32,7 @@ function switchView(view) {
     document.getElementById(`view-${view}`).classList.add('active');
 
     if (view === 'dashboard') refreshStats();
+    if (view === 'library') refreshLibrary();
     if (view === 'settings') loadSettings();
 }
 
@@ -706,6 +707,129 @@ async function sendChatMessage(message) {
         chatStreaming = false;
         document.querySelectorAll('.chat-btn, .chat-send-btn, .word-action-btn').forEach(b => b.disabled = false);
     }
+}
+
+// ── Library ──────────────────────────────────────────────────────────────
+
+document.querySelectorAll('.library-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.library-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const tab = btn.dataset.tab;
+        document.getElementById('library-active').classList.toggle('hidden', tab !== 'active');
+        document.getElementById('library-archived').classList.toggle('hidden', tab !== 'archived');
+    });
+});
+
+async function refreshLibrary() {
+    const [active, archived] = await Promise.all([
+        api('/api/questions/active'),
+        api('/api/questions/archived'),
+    ]);
+    renderLibraryPanel('library-active', active, false);
+    renderLibraryPanel('library-archived', archived, true);
+}
+
+function renderLibraryPanel(containerId, questions, isArchived) {
+    const container = document.getElementById(containerId);
+    if (questions.length === 0) {
+        container.innerHTML = `<p class="library-empty">${isArchived ? 'No archived questions.' : 'No active questions yet. Start a quiz session to begin.'}</p>`;
+        return;
+    }
+
+    // Group by word
+    const byWord = new Map();
+    for (const q of questions) {
+        const key = q.target_word.toLowerCase();
+        if (!byWord.has(key)) byWord.set(key, []);
+        byWord.get(key).push(q);
+    }
+
+    container.innerHTML = '';
+    for (const [, wordQuestions] of byWord) {
+        const first = wordQuestions[0];
+        const totalShown = wordQuestions.reduce((s, q) => s + (q.times_shown || 0), 0);
+        const totalCorrect = wordQuestions.reduce((s, q) => s + (q.times_correct || 0), 0);
+
+        const item = document.createElement('div');
+        item.className = 'question-list-item';
+
+        // SRS status
+        let srsText = '';
+        if (first.next_review) {
+            const now = new Date();
+            const due = new Date(first.next_review);
+            const diffMs = due - now;
+            if (diffMs <= 0) {
+                srsText = 'due now';
+            } else {
+                const diffDays = Math.ceil(diffMs / 86400000);
+                srsText = diffDays === 1 ? 'due in 1d' : `due in ${diffDays}d`;
+            }
+        }
+
+        let html = `<div class="qli-header">`;
+        html += `<div class="qli-word-row">`;
+        html += `<strong class="qli-word">${first.target_word}</strong>`;
+        if (first.cluster_title) html += `<span class="qli-cluster">${first.cluster_title}</span>`;
+        html += `</div>`;
+        html += `<div class="qli-stats">`;
+        html += `<span>shown ${totalShown}x, ${totalCorrect}/${totalShown} correct</span>`;
+        if (srsText) html += `<span class="qli-srs ${srsText === 'due now' ? 'due-now' : ''}">${srsText}</span>`;
+        html += `</div>`;
+        html += `</div>`;
+
+        html += `<div class="qli-actions">`;
+        if (isArchived) {
+            html += `<button class="qli-btn" data-action="restore" data-ids='${JSON.stringify(wordQuestions.map(q => q.id))}'>Restore</button>`;
+        } else {
+            html += `<button class="qli-btn" data-action="archive" data-ids='${JSON.stringify(wordQuestions.map(q => q.id))}'>Archive</button>`;
+        }
+        html += `<button class="qli-btn" data-action="reset" data-word="${first.target_word}">Reset Due</button>`;
+        html += `</div>`;
+
+        // Expandable stems
+        html += `<div class="qli-stems hidden">`;
+        for (const q of wordQuestions) {
+            html += `<div class="qli-stem">${q.stem}</div>`;
+        }
+        html += `</div>`;
+
+        item.innerHTML = html;
+
+        // Click to expand
+        item.querySelector('.qli-header').addEventListener('click', () => {
+            item.classList.toggle('expanded');
+            item.querySelector('.qli-stems').classList.toggle('hidden');
+        });
+
+        container.appendChild(item);
+    }
+
+    // Action handlers (delegated)
+    container.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.qli-btn');
+        if (!btn) return;
+        e.stopPropagation();
+        const action = btn.dataset.action;
+
+        if (action === 'archive' || action === 'restore') {
+            const ids = JSON.parse(btn.dataset.ids);
+            const archived = action === 'archive';
+            btn.disabled = true;
+            btn.textContent = archived ? 'Archiving...' : 'Restoring...';
+            for (const id of ids) {
+                await api(`/api/question/${id}/archive`, 'POST', { archived });
+            }
+            await refreshLibrary();
+        } else if (action === 'reset') {
+            const word = btn.dataset.word;
+            btn.disabled = true;
+            btn.textContent = 'Resetting...';
+            await api('/api/questions/reset-due', 'POST', { word });
+            await refreshLibrary();
+        }
+    });
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────
