@@ -392,6 +392,8 @@ async function submitAnswer(selectedIndex, questionData) {
             context_sentence: result.context_sentence,
             cluster_title: questionData.cluster_title,
             choice_details: questionData.choice_details || [],
+            selected_index: selectedIndex,
+            was_correct: result.correct,
         };
 
         // Audio: context sentence → pause → explanation
@@ -529,7 +531,7 @@ const CHAT_PROMPTS = {
     etymology:
         'Explain the etymology and deeper meaning of "{word}". Include its roots (Latin, Greek, etc.), how the meaning evolved, and any interesting historical context.',
     compare:
-        'Compare all four choices ({choices}). For each word, explain what it means, when you\'d use it vs the others, and give 2 example sentences. Write in flowing conversational prose — no tables, no bullet points, no markdown formatting.',
+        'The sentence was: "{stem}"\nI chose "{chosen}" — {result}.\n\nCompare all four choices ({choices}). For each word, explain what it means, when you\'d use it vs the others, and give 2 example sentences. Write in flowing conversational prose — no tables, no bullet points, no numbered lists.',
 };
 
 let selectedComplexity = 'simple';
@@ -549,8 +551,16 @@ document.querySelectorAll('.chat-btn').forEach(btn => {
         if (chatStreaming || !currentQuestionContext) return;
         const action = btn.dataset.action;
         if (action === 'compare') {
-            const message = CHAT_PROMPTS.compare.replace(
-                '{choices}', currentQuestionContext.choices.join(', '));
+            const ctx = currentQuestionContext;
+            const chosen = ctx.choices[ctx.selected_index];
+            const resultText = ctx.was_correct
+                ? 'correct'
+                : `wrong, the answer was "${ctx.correct_word}"`;
+            const message = CHAT_PROMPTS.compare
+                .replace('{stem}', ctx.stem)
+                .replace('{chosen}', chosen)
+                .replace('{result}', resultText)
+                .replace('{choices}', ctx.choices.join(', '));
             sendChatMessage(message);
         }
     });
