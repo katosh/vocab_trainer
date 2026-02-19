@@ -218,6 +218,13 @@ class TestStats:
     def test_stats_with_session(self, populated_db):
         sid = populated_db.start_session()
         populated_db.end_session(sid, 10, 7)
+        # Accuracy now comes from reviews table, not sessions
+        from datetime import datetime, timezone
+        next_rev = datetime.now(timezone.utc).isoformat()
+        for i in range(7):
+            populated_db.upsert_review(f"word{i}", 2.5, 1.0, 1, next_rev, correct=True)
+        for i in range(3):
+            populated_db.upsert_review(f"wrong{i}", 2.5, 1.0, 0, next_rev, correct=False)
         stats = populated_db.get_stats()
         assert stats["total_sessions"] == 1
         assert stats["total_questions_answered"] == 10

@@ -495,11 +495,19 @@ class Database:
         ready = self.get_ready_question_count()
         archived = self.get_archived_question_count()
 
-        sessions = self.conn.execute(
-            "SELECT COUNT(*) as cnt, COALESCE(SUM(questions_total),0) as total_q, "
-            "COALESCE(SUM(questions_correct),0) as correct_q FROM sessions "
-            "WHERE ended_at IS NOT NULL"
+        # Count accuracy from the reviews table (always recorded, unlike sessions)
+        review_stats = self.conn.execute(
+            "SELECT COALESCE(SUM(total_correct),0) as correct, "
+            "COALESCE(SUM(total_correct + total_incorrect),0) as total "
+            "FROM reviews"
         ).fetchone()
+
+        sessions = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM sessions"
+        ).fetchone()
+
+        total_answered = review_stats["total"]
+        total_correct = review_stats["correct"]
 
         return {
             "total_words": word_count,
@@ -511,11 +519,11 @@ class Database:
             "questions_ready": ready,
             "questions_archived": archived,
             "total_sessions": sessions["cnt"],
-            "total_questions_answered": sessions["total_q"],
-            "total_correct": sessions["correct_q"],
+            "total_questions_answered": total_answered,
+            "total_correct": total_correct,
             "accuracy": (
-                round(sessions["correct_q"] / sessions["total_q"] * 100, 1)
-                if sessions["total_q"] > 0
+                round(total_correct / total_answered * 100, 1)
+                if total_answered > 0
                 else 0
             ),
         }
