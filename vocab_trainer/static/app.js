@@ -655,13 +655,15 @@ async function narrateText(btn, text) {
 }
 
 class NarrationQueue {
-    constructor() {
+    constructor(previousQueue) {
         this.buffer = '';
         this.sentences = [];
         this.currentIndex = 0;
         this.playing = false;
         this.stopped = false;
         this.flushed = false;
+        this.started = false;
+        this.previousQueue = previousQueue || null;
         this.onDone = null;
     }
 
@@ -781,6 +783,16 @@ class NarrationQueue {
         }
         const sentence = this.sentences[this.currentIndex];
         if (!sentence.ready || !sentence.audio) return;
+        if (!this.started) {
+            this.started = true;
+            // Stop previous narration and other audio, but not this queue
+            if (this.previousQueue) { this.previousQueue.stop(); this.previousQueue = null; }
+            if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
+            activeAudioElements.forEach(a => { a.pause(); a.currentTime = 0; });
+            activeAudioElements = [];
+            const tts = document.getElementById('tts-audio');
+            if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
+        }
         this.playing = true;
         sentence.audio.play().catch(() => {
             this.playing = false;
@@ -811,8 +823,7 @@ async function sendChatMessage(message) {
     // Set up auto-narration if enabled
     const autoNarrating = autoCompareEnabled;
     if (autoNarrating) {
-        stopAllAudio();
-        narrationQueue = new NarrationQueue();
+        narrationQueue = new NarrationQueue(narrationQueue);
     }
 
     appendChatMessage('user', message);
