@@ -1,15 +1,23 @@
 """CLI entry point for vocab-trainer.
 
 Usage:
-  uv run --project vocab_trainer/ python -m vocab_trainer serve [--port PORT]
-  uv run --project vocab_trainer/ python -m vocab_trainer import
-  uv run --project vocab_trainer/ python -m vocab_trainer generate [--count N]
-  uv run --project vocab_trainer/ python -m vocab_trainer stats
+  uv run python -m vocab_trainer serve [--port PORT]
+  uv run python -m vocab_trainer stop
+  uv run python -m vocab_trainer restart [--port PORT]
+  uv run python -m vocab_trainer status
+  uv run python -m vocab_trainer import
+  uv run python -m vocab_trainer generate [--count N]
+  uv run python -m vocab_trainer stats
 """
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import sys
+from pathlib import Path
+
+PID_FILE = Path(__file__).resolve().parent.parent / ".server.pid"
 
 
 def main():
@@ -18,6 +26,12 @@ def main():
 
     if command == "serve":
         _serve(args[1:])
+    elif command == "stop":
+        _stop()
+    elif command == "restart":
+        _restart(args[1:])
+    elif command == "status":
+        _status()
     elif command == "import":
         _import_vocab()
     elif command == "generate":
@@ -26,20 +40,89 @@ def main():
         _stats()
     else:
         print(f"Unknown command: {command}")
-        print("Commands: serve, import, generate, stats")
+        print("Commands: serve, stop, restart, status, import, generate, stats")
         sys.exit(1)
 
 
-def _serve(args: list[str]):
-    import uvicorn
+def _parse_port(args: list[str]) -> int:
     port = 8765
     for i, a in enumerate(args):
         if a == "--port" and i + 1 < len(args):
             port = int(args[i + 1])
+    return port
+
+
+def _read_pid() -> int | None:
+    """Read PID from file, return None if stale or missing."""
+    if not PID_FILE.exists():
+        return None
+    try:
+        pid = int(PID_FILE.read_text().strip())
+        # Check if process is actually running
+        os.kill(pid, 0)
+        return pid
+    except (ValueError, ProcessLookupError, PermissionError):
+        PID_FILE.unlink(missing_ok=True)
+        return None
+
+
+def _write_pid() -> None:
+    PID_FILE.write_text(str(os.getpid()))
+
+
+def _remove_pid() -> None:
+    PID_FILE.unlink(missing_ok=True)
+
+
+def _stop() -> bool:
+    """Stop a running server. Returns True if a server was stopped."""
+    pid = _read_pid()
+    if pid is None:
+        print("Server is not running.")
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+        print(f"Stopped server (PID {pid}).")
+        PID_FILE.unlink(missing_ok=True)
+        return True
+    except ProcessLookupError:
+        print("Server was not running (stale PID file removed).")
+        PID_FILE.unlink(missing_ok=True)
+        return False
+
+
+def _status():
+    pid = _read_pid()
+    if pid is None:
+        print("Server is not running.")
+    else:
+        print(f"Server is running (PID {pid}).")
+
+
+def _restart(args: list[str]):
+    import time
+    _stop()
+    time.sleep(1)
+    _serve(args)
+
+
+def _serve(args: list[str]):
+    import uvicorn
+
+    existing = _read_pid()
+    if existing is not None:
+        print(f"Server already running (PID {existing}). Use 'restart' or 'stop' first.")
+        sys.exit(1)
+
+    port = _parse_port(args)
+    _write_pid()
 
     print(f"Starting Vocab Trainer on http://localhost:{port}")
     print("Press Ctrl+C to stop\n")
-    uvicorn.run("vocab_trainer.app:app", host="127.0.0.1", port=port, reload=False)
+    try:
+        uvicorn.run("vocab_trainer.app:app", host="127.0.0.1", port=port, reload=False)
+    finally:
+        _remove_pid()
 
 
 def _import_vocab():

@@ -3,4 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 progress.db
+progress.db-shm
+progress.db-wal
 audio_cache/
+.server.pid
