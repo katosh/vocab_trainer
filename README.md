@@ -20,6 +20,17 @@ After each answer, the trainer becomes an interactive tutor:
 - **Context on demand** — One-click prompts generate example sentences at different complexity levels (simple, intermediate, advanced, literary) or explore a word's etymology and history.
 - **Free-form chat** — Ask the AI anything about the words in the current question: subtle connotations, register differences, common collocations, or anything else.
 
+## Prerequisites
+
+- **Python 3.10+**
+- **Ollama** — local LLM inference (or set an API key for Anthropic/OpenAI instead)
+
+[uv](https://docs.astral.sh/uv/) is the recommended way to run the project — it handles the virtualenv and installs automatically. All commands below use `uv run`, which can be dropped if you install manually into any virtualenv:
+
+```bash
+pip install -e .               # then use "python -m vocab_trainer ..." instead of "uv run python -m vocab_trainer ..."
+```
+
 ## Quick Start
 
 ```bash
@@ -35,7 +46,7 @@ uv run python -m vocab_trainer serve
 # Open http://localhost:8765
 ```
 
-The bundled vocabulary files in `data/` are imported automatically on startup. You can also pre-generate questions from the Dashboard or via CLI:
+The SQLite database and all tables are created automatically on first run. The bundled vocabulary files in `data/` are imported automatically on startup. You can also pre-generate questions from the Dashboard or via CLI:
 
 ```bash
 uv run python -m vocab_trainer generate --count 20
