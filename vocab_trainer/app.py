@@ -72,6 +72,11 @@ def _get_tts():
 _bg_generating = False
 _bg_log = logging.getLogger("vocab_trainer.bg")
 
+# Gate that background LLM tasks wait on between iterations.
+# Cleared while a chat stream is active so the chat gets GPU priority.
+_llm_gate = asyncio.Event()
+_llm_gate.set()  # open by default
+
 
 async def _ensure_question_buffer():
     """Kick off background generation if the non-archived bank is too low."""
@@ -94,9 +99,10 @@ async def _generate_in_background(count: int):
     global _bg_generating
     try:
         _bg_log.info("Background generation: creating %d questions", count)
+        await _llm_gate.wait()  # yield to chat if active
         db = get_db()
         llm = _get_llm()
-        questions = await generate_batch(llm, db, count=count)
+        questions = await generate_batch(llm, db, count=count, gate=_llm_gate)
         _bg_log.info(
             "Background generation: created %d questions, bank now %d ready",
             len(questions), db.get_ready_question_count(),
@@ -135,6 +141,7 @@ async def _pregenerate_session_questions(session_id: int, pending_indices: list[
         cluster, word_info = q_data.pop("pending_cluster"), q_data.pop("pending_word")
         q_data["generating"] = True
         try:
+            await _llm_gate.wait()  # yield to chat if active
             q = await generate_question(
                 llm, db,
                 cluster=cluster,
@@ -839,12 +846,15 @@ async def api_chat(request: Request):
     llm = _get_llm()
 
     async def stream():
+        _llm_gate.clear()  # pause background LLM work
         try:
             async for token in llm.generate_stream(prompt, temperature=0.7, system=system):
                 yield f"data: {json.dumps({'token': token})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            _llm_gate.set()  # resume background LLM work
 
     return StreamingResponse(
         stream(),
