@@ -22,15 +22,15 @@
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-value" id="stat-total">—</div>
-                    <div class="stat-label">Total Words</div>
+                    <div class="stat-label">Words / Clusters</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-due">—</div>
+                    <div class="stat-label">Due Now</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="stat-reviewed">—</div>
                     <div class="stat-label">Reviewed</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value" id="stat-clusters">—</div>
-                    <div class="stat-label">Clusters</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="stat-accuracy">—</div>
@@ -50,6 +50,21 @@
                 <button id="btn-start-session" class="btn-primary btn-large">Start Session</button>
                 <button id="btn-import" class="btn-secondary">Import Vocabulary</button>
                 <button id="btn-generate" class="btn-secondary">Generate Questions</button>
+            </div>
+
+            <!-- Session gate panel (shown when active words cap blocks new words) -->
+            <div id="session-gate" class="session-gate hidden">
+                <p id="gate-summary" class="gate-summary"></p>
+                <div class="gate-slider-row">
+                    <label for="gate-slider">Max Active Words</label>
+                    <input type="range" id="gate-slider" min="0" max="100" value="20">
+                    <span id="gate-slider-val">20</span>
+                </div>
+                <p id="gate-result" class="gate-result"></p>
+                <div class="gate-actions">
+                    <button id="gate-start" class="btn-primary">Start Session</button>
+                    <button id="gate-cancel" class="btn-secondary">Cancel</button>
+                </div>
             </div>
 
             <div id="dashboard-message" class="message hidden"></div>

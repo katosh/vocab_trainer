@@ -40,9 +40,10 @@ function switchView(view) {
 async function refreshStats() {
     try {
         const stats = await api('/api/stats');
-        document.getElementById('stat-total').textContent = stats.total_words;
+        document.getElementById('stat-total').textContent =
+            stats.total_words + ' / ' + stats.total_clusters;
+        document.getElementById('stat-due').textContent = stats.words_due;
         document.getElementById('stat-reviewed').textContent = stats.words_reviewed;
-        document.getElementById('stat-clusters').textContent = stats.total_clusters;
         document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
         document.getElementById('stat-sessions').textContent = stats.total_sessions;
         document.getElementById('stat-active').textContent =
@@ -100,6 +101,84 @@ async function generateQuestions() {
 // ── Quiz Session ─────────────────────────────────────────────────────────
 
 async function startSession() {
+    const btn = document.getElementById('btn-start-session');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+
+    try {
+        const preview = await api('/api/session/preview');
+        if (preview.needs_gate) {
+            btn.disabled = false;
+            btn.textContent = 'Start Session';
+            showSessionGate(preview);
+            return;
+        }
+        btn.disabled = false;
+        btn.textContent = 'Start Session';
+        await doStartSession();
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Start Session';
+        showMessage('dashboard-message', 'Failed to start session: ' + e.message, 'error');
+    }
+}
+
+function showSessionGate(preview) {
+    const gate = document.getElementById('session-gate');
+    gate.classList.remove('hidden');
+
+    // Summary
+    const parts = [];
+    if (preview.review_count > 0) parts.push(preview.review_count + ' review');
+    if (preview.reinforcement_count > 0) parts.push(preview.reinforcement_count + ' reinforcement');
+    if (preview.new_word_count > 0) parts.push(preview.new_word_count + ' new');
+    const breakdown = parts.length > 0 ? ' (' + parts.join(', ') + ')' : '';
+    document.getElementById('gate-summary').textContent =
+        preview.ready_total + ' of ' + preview.session_size + ' questions ready' + breakdown +
+        '. Increase the Active Words cap to add new words.';
+
+    // Slider
+    const slider = document.getElementById('gate-slider');
+    const sliderVal = document.getElementById('gate-slider-val');
+    slider.min = preview.max_active_words;
+    slider.max = preview.max_active_words + 50;
+    // Default: value that would fill the session
+    const deficit = preview.session_size - preview.ready_total;
+    const idealCap = preview.max_active_words + Math.min(deficit, preview.available_new_words);
+    slider.value = idealCap;
+    sliderVal.textContent = idealCap;
+
+    function recalc() {
+        const val = parseInt(slider.value);
+        sliderVal.textContent = val;
+        const increase = val - preview.max_active_words;
+        const newWords = Math.min(increase, preview.available_new_words);
+        const total = Math.min(preview.session_size, preview.ready_total + newWords);
+        const startBtn = document.getElementById('gate-start');
+        document.getElementById('gate-result').textContent =
+            '→ ' + total + ' questions' + (total >= preview.session_size ? ' (session full)' : '');
+        startBtn.textContent = 'Start Session (' + total + ')';
+        startBtn.disabled = total < 1;
+    }
+    recalc();
+
+    slider.oninput = recalc;
+
+    document.getElementById('gate-start').onclick = async () => {
+        const newMax = parseInt(slider.value);
+        gate.classList.add('hidden');
+        if (newMax !== preview.max_active_words) {
+            await api('/api/settings', 'PUT', { max_active_words: newMax });
+        }
+        await doStartSession();
+    };
+
+    document.getElementById('gate-cancel').onclick = () => {
+        gate.classList.add('hidden');
+    };
+}
+
+async function doStartSession() {
     switchView('quiz');
     showQuizState('loading');
 

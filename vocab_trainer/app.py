@@ -280,6 +280,52 @@ async def api_generate(request: Request):
 
 # ── API: Session management ──────────────────────────────────────────────
 
+@app.get("/api/session/preview")
+async def api_session_preview():
+    """Compute what a session would contain without creating one."""
+    db = get_db()
+    s = get_settings()
+
+    # Pool 1: due reviews
+    review_qs = db.get_review_questions(limit=s.session_size)
+    review_count = len(review_qs)
+    seen = {q["target_word"].lower() for q in review_qs}
+
+    # Pool 2: new words (capped)
+    active_count = db.get_active_word_count()
+    room = max(0, s.max_active_words - active_count)
+    remaining = s.session_size - review_count
+    new_limit = min(room, remaining)
+    new_qs = db.get_new_questions(limit=new_limit) if new_limit > 0 else []
+    new_count = sum(1 for q in new_qs if q["target_word"].lower() not in seen)
+    seen.update(q["target_word"].lower() for q in new_qs)
+
+    # Pool 3: reinforcement (active-word unseen questions)
+    reinforce_remaining = s.session_size - review_count - new_count
+    active_qs = db.get_active_word_new_questions(
+        limit=reinforce_remaining, exclude_words=seen
+    ) if reinforce_remaining > 0 else []
+    reinforcement_count = len(active_qs)
+
+    ready_total = review_count + new_count + reinforcement_count
+
+    # How many more new-word questions exist in the bank (ignoring cap)?
+    all_new = db.get_new_questions(limit=s.session_size)
+    available_new = sum(1 for q in all_new if q["target_word"].lower() not in seen)
+
+    return {
+        "review_count": review_count,
+        "reinforcement_count": reinforcement_count,
+        "new_word_count": new_count,
+        "ready_total": ready_total,
+        "available_new_words": available_new,
+        "session_size": s.session_size,
+        "active_words": active_count,
+        "max_active_words": s.max_active_words,
+        "needs_gate": ready_total < s.session_size and available_new > 0,
+    }
+
+
 @app.post("/api/session/start")
 async def api_session_start():
     db = get_db()
