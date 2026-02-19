@@ -9,7 +9,7 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from vocab_trainer.audio import get_or_create_audio, sentence_hash
@@ -427,3 +427,88 @@ async def api_update_settings(request: Request):
             setattr(s, k, v)
     save_settings(s)
     return s.to_dict()
+
+
+# ── API: Chat (LLM tutor) ───────────────────────────────────────────────
+
+def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
+    """Build a single prompt string with question context + conversation."""
+    lines = [
+        "You are a vocabulary tutor helping a student master precise English word usage.",
+        "The student just answered a quiz question. Here is the full context:",
+        "",
+        f"Question type: {context.get('question_type', 'fill_blank')}",
+    ]
+    if context.get("cluster_title"):
+        lines.append(f"Word cluster: {context['cluster_title']}")
+    lines.append(f"Question: {context.get('stem', '')}")
+
+    choices = context.get("choices", [])
+    if choices:
+        labels = ["A", "B", "C", "D"]
+        lines.append(
+            "Choices: "
+            + ", ".join(f"{labels[i]}) {c}" for i, c in enumerate(choices))
+        )
+
+    lines.append(f"Correct answer: {context.get('correct_word', '')}")
+    lines.append(f"Explanation: {context.get('explanation', '')}")
+    lines.append(f"Context sentence: {context.get('context_sentence', '')}")
+
+    details = context.get("choice_details", [])
+    if details:
+        lines.append("")
+        lines.append("Word meanings in this cluster:")
+        for d in details:
+            if d.get("meaning"):
+                line = f"- {d['word']}: {d['meaning']}"
+                if d.get("distinction"):
+                    line += f" ({d['distinction']})"
+                lines.append(line)
+
+    lines += [
+        "",
+        "Be concise and educational. Focus on nuances between near-synonyms.",
+        "Use concrete example sentences to illustrate. Format with markdown.",
+        "",
+    ]
+
+    # Append conversation history
+    for msg in history:
+        role = "Student" if msg["role"] == "user" else "Tutor"
+        lines.append(f"{role}: {msg['content']}")
+        lines.append("")
+
+    lines.append(f"Student: {message}")
+    lines.append("")
+    lines.append("Tutor:")
+
+    return "\n".join(lines)
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    body = await request.json()
+    message = body.get("message", "")
+    context = body.get("context", {})
+    history = body.get("history", [])
+
+    if not message:
+        raise HTTPException(400, "No message provided")
+
+    prompt = _build_chat_prompt(context, history, message)
+    llm = _get_llm()
+
+    async def stream():
+        try:
+            async for token in llm.generate_stream(prompt, temperature=0.7):
+                yield f"data: {json.dumps({'token': token})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

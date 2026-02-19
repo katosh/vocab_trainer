@@ -357,7 +357,7 @@ nav {
     border-left-color: var(--success);
 }
 
-.choice-detail strong {
+.choice-detail-text strong {
     color: var(--text);
 }
 
@@ -368,6 +368,191 @@ nav {
     margin-top: 2px;
     font-style: italic;
 }
+
+.choice-detail-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.word-action-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.word-action-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.word-action-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+/* Word Chat (LLM tutor) */
+.word-chat {
+    margin-top: 16px;
+    margin-bottom: 16px;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+    text-align: left;
+}
+
+.chat-quick-buttons {
+    margin-bottom: 12px;
+}
+
+.chat-button-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.chat-btn {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 6px 14px;
+    color: var(--text);
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.chat-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.chat-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.complexity-selector {
+    display: flex;
+    gap: 2px;
+    align-items: center;
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 2px 2px 2px 8px;
+    width: fit-content;
+}
+
+.complexity-label {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-right: 4px;
+    white-space: nowrap;
+}
+
+.complexity-btn {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.complexity-btn:hover { color: var(--text); }
+.complexity-btn.active {
+    background: var(--accent);
+    color: white;
+}
+
+.chat-messages {
+    max-height: 400px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+}
+
+.chat-messages:empty {
+    display: none;
+}
+
+.chat-msg {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.chat-msg.user {
+    background: rgba(108, 140, 255, 0.1);
+    border-left: 3px solid var(--accent);
+    color: var(--text-dim);
+    font-size: 0.82rem;
+}
+
+.chat-msg.assistant {
+    background: var(--bg);
+    white-space: pre-wrap;
+}
+
+.chat-msg.assistant strong { color: var(--accent); }
+.chat-msg.assistant code {
+    background: var(--bg-card);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.85em;
+}
+
+.chat-msg.streaming::after {
+    content: '\25CF';
+    color: var(--accent);
+    animation: blink 1s step-end infinite;
+    margin-left: 2px;
+}
+
+@keyframes blink {
+    50% { opacity: 0; }
+}
+
+.chat-input-row {
+    display: flex;
+    gap: 6px;
+}
+
+.chat-input-row input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.chat-input-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.chat-send-btn {
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius);
+    padding: 8px 16px;
+    color: white;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.chat-send-btn:hover { background: var(--accent-hover); }
+.chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Summary */
 #quiz-summary {

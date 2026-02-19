@@ -3,6 +3,9 @@
 const API = '';
 let currentSessionId = null;
 let questionStartTime = null;
+let currentQuestionContext = null;
+let chatHistory = [];
+let chatStreaming = false;
 
 // ── Navigation ───────────────────────────────────────────────────────────
 
@@ -127,6 +130,12 @@ function showQuestion(data) {
     showQuizState('question');
     document.getElementById('answer-reveal').classList.add('hidden');
 
+    // Reset chat state
+    chatHistory = [];
+    currentQuestionContext = null;
+    document.getElementById('chat-messages').innerHTML = '';
+    document.getElementById('chat-input').value = '';
+
     // Progress
     const progress = data.progress;
     const pct = ((progress.current - 1) / progress.total * 100);
@@ -199,25 +208,47 @@ async function submitAnswer(selectedIndex, questionData) {
         document.getElementById('explanation').textContent = result.explanation;
         document.getElementById('context-sentence').textContent = result.context_sentence;
 
-        // Render choice details (meanings + why not)
+        // Render choice details with per-word action buttons
         const detailsEl = document.getElementById('choice-details');
         detailsEl.innerHTML = '';
-        if (questionData.choice_details && questionData.choice_details.length) {
-            const heading = document.createElement('h4');
-            heading.textContent = 'All choices';
-            detailsEl.appendChild(heading);
+        const details = questionData.choice_details && questionData.choice_details.length
+            ? questionData.choice_details
+            : questionData.choices.map(c => ({ word: c, meaning: '', distinction: '' }));
 
-            questionData.choice_details.forEach((d, i) => {
-                if (!d.meaning) return;
-                const item = document.createElement('div');
-                const isCorrect = i === questionData.correct_index;
-                item.className = 'choice-detail' + (isCorrect ? ' correct' : '');
-                item.innerHTML =
-                    `<strong>${d.word}</strong> — ${d.meaning}` +
-                    (d.distinction ? `<span class="distinction">${d.distinction}</span>` : '');
-                detailsEl.appendChild(item);
-            });
-        }
+        const heading = document.createElement('h4');
+        heading.textContent = 'All choices';
+        detailsEl.appendChild(heading);
+
+        details.forEach((d, i) => {
+            const item = document.createElement('div');
+            const isCorrect = i === questionData.correct_index;
+            item.className = 'choice-detail' + (isCorrect ? ' correct' : '');
+
+            let html = `<div class="choice-detail-text"><strong>${d.word}</strong>`;
+            if (d.meaning) html += ` — ${d.meaning}`;
+            if (d.distinction) html += `<span class="distinction">${d.distinction}</span>`;
+            html += '</div>';
+            html += `<div class="choice-detail-actions">` +
+                `<button class="word-action-btn" data-word="${d.word}" data-action="context">Context</button>` +
+                `<button class="word-action-btn" data-word="${d.word}" data-action="etymology">Etymology</button>` +
+                `</div>`;
+
+            item.innerHTML = html;
+            detailsEl.appendChild(item);
+        });
+
+        // Store context for chat
+        currentQuestionContext = {
+            question_type: questionData.question_type,
+            stem: questionData.stem,
+            choices: questionData.choices,
+            correct_index: questionData.correct_index,
+            correct_word: questionData.correct_word,
+            explanation: result.explanation,
+            context_sentence: result.context_sentence,
+            cluster_title: questionData.cluster_title,
+            choice_details: questionData.choice_details || [],
+        };
 
         // Audio
         if (result.audio_hash) {
@@ -266,6 +297,9 @@ document.getElementById('btn-back-dashboard').addEventListener('click', () => {
 // ── Keyboard shortcuts ───────────────────────────────────────────────────
 
 document.addEventListener('keydown', (e) => {
+    // Don't intercept when typing in the chat input
+    if (document.activeElement && document.activeElement.id === 'chat-input') return;
+
     const quizQuestion = document.getElementById('quiz-question');
     if (quizQuestion.classList.contains('hidden')) return;
 
@@ -289,6 +323,166 @@ document.addEventListener('keydown', (e) => {
         }
     }
 });
+
+// ── Word Chat (LLM tutor) ───────────────────────────────────────────────
+
+const CHAT_PROMPTS = {
+    context_simple:
+        'Show me 3 simple, everyday sentences using "{word}". Keep the vocabulary and situations accessible.',
+    context_intermediate:
+        'Show me 3 sentences using "{word}" in professional or academic contexts.',
+    context_advanced:
+        'Show me 3 sentences using "{word}" in literary or sophisticated contexts. Show the word at its most expressive.',
+    etymology:
+        'Explain the etymology and deeper meaning of "{word}". Include its roots (Latin, Greek, etc.), how the meaning evolved, and any interesting historical context.',
+    compare:
+        'Compare all four choices ({choices}) in detail. For each, explain exactly when you\'d use it vs the others, with a concrete example sentence highlighting the distinction.',
+};
+
+let selectedComplexity = 'simple';
+
+// Complexity selector
+document.querySelectorAll('.complexity-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.complexity-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedComplexity = btn.dataset.level;
+    });
+});
+
+// Global chat buttons (Compare all)
+document.querySelectorAll('.chat-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        if (chatStreaming || !currentQuestionContext) return;
+        const action = btn.dataset.action;
+        if (action === 'compare') {
+            const message = CHAT_PROMPTS.compare.replace(
+                '{choices}', currentQuestionContext.choices.join(', '));
+            sendChatMessage(message);
+        }
+    });
+});
+
+// Per-word action buttons (delegated from choice-details container)
+document.getElementById('choice-details').addEventListener('click', (e) => {
+    const btn = e.target.closest('.word-action-btn');
+    if (!btn || chatStreaming || !currentQuestionContext) return;
+    const word = btn.dataset.word;
+    const action = btn.dataset.action;
+    let message;
+    if (action === 'context') {
+        const key = 'context_' + selectedComplexity;
+        message = CHAT_PROMPTS[key].replace('{word}', word);
+    } else if (action === 'etymology') {
+        message = CHAT_PROMPTS.etymology.replace('{word}', word);
+    }
+    if (message) sendChatMessage(message);
+});
+
+// Text input
+document.getElementById('chat-send').addEventListener('click', () => {
+    const input = document.getElementById('chat-input');
+    const msg = input.value.trim();
+    if (msg && !chatStreaming && currentQuestionContext) {
+        input.value = '';
+        sendChatMessage(msg);
+    }
+});
+
+document.getElementById('chat-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        document.getElementById('chat-send').click();
+    }
+});
+
+function appendChatMessage(role, text) {
+    const el = document.createElement('div');
+    el.className = `chat-msg ${role}`;
+    if (role === 'assistant') {
+        el.innerHTML = simpleMarkdown(text);
+    } else {
+        el.textContent = text;
+    }
+    const container = document.getElementById('chat-messages');
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
+    return el;
+}
+
+function simpleMarkdown(text) {
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`(.+?)`/g, '<code>$1</code>')
+        .replace(/\n/g, '<br>');
+}
+
+async function sendChatMessage(message) {
+    if (chatStreaming) return;
+    chatStreaming = true;
+
+    // Disable buttons while streaming
+    document.querySelectorAll('.chat-btn, .chat-send-btn, .word-action-btn').forEach(b => b.disabled = true);
+
+    appendChatMessage('user', message);
+    const assistantEl = appendChatMessage('assistant', '');
+    assistantEl.classList.add('streaming');
+
+    let fullResponse = '';
+
+    try {
+        const resp = await fetch(API + '/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message,
+                context: currentQuestionContext,
+                history: chatHistory,
+            }),
+        });
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+
+            for (const line of chunk.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.token) {
+                        fullResponse += data.token;
+                        assistantEl.innerHTML = simpleMarkdown(fullResponse);
+                        const container = document.getElementById('chat-messages');
+                        container.scrollTop = container.scrollHeight;
+                    }
+                    if (data.error) {
+                        fullResponse += `\n[Error: ${data.error}]`;
+                        assistantEl.innerHTML = simpleMarkdown(fullResponse);
+                    }
+                } catch (e) {
+                    // Ignore malformed SSE lines
+                }
+            }
+        }
+
+        chatHistory.push({ role: 'user', content: message });
+        chatHistory.push({ role: 'assistant', content: fullResponse });
+    } catch (e) {
+        assistantEl.innerHTML = simpleMarkdown(`[Connection error: ${e.message}]`);
+    } finally {
+        assistantEl.classList.remove('streaming');
+        chatStreaming = false;
+        document.querySelectorAll('.chat-btn, .chat-send-btn, .word-action-btn').forEach(b => b.disabled = false);
+    }
+}
 
 // ── Settings ─────────────────────────────────────────────────────────────
 

@@ -89,6 +89,27 @@
                     <div class="context-sentence" id="context-sentence"></div>
                     <div class="choice-details" id="choice-details"></div>
                     <audio id="tts-audio" hidden></audio>
+
+                    <!-- Word chat (LLM tutor) -->
+                    <div class="word-chat" id="word-chat">
+                        <div class="chat-quick-buttons">
+                            <div class="chat-button-row">
+                                <button class="chat-btn" data-action="compare">Compare all choices</button>
+                                <div class="complexity-selector" id="complexity-selector">
+                                    <span class="complexity-label">Context level:</span>
+                                    <button class="complexity-btn active" data-level="simple">Simple</button>
+                                    <button class="complexity-btn" data-level="intermediate">Intermediate</button>
+                                    <button class="complexity-btn" data-level="advanced">Advanced</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chat-messages" id="chat-messages"></div>
+                        <div class="chat-input-row">
+                            <input type="text" id="chat-input" placeholder="Ask about these words...">
+                            <button id="chat-send" class="chat-send-btn">Send</button>
+                        </div>
+                    </div>
+
                     <button id="btn-next" class="btn-primary">Next Question</button>
                 </div>
             </div>
