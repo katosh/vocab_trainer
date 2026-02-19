@@ -304,23 +304,23 @@ async function submitAnswer(selectedIndex, questionData) {
             choice_details: questionData.choice_details || [],
         };
 
-        // Audio: explanation → pause → context sentence
+        // Audio: context sentence → pause → explanation
         const audio = document.getElementById('tts-audio');
-        if (result.explanation_audio_hash) {
-            audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
+        if (result.context_audio_hash) {
+            audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
             audio.hidden = false;
             audio.onended = () => {
-                if (result.context_audio_hash) {
+                if (result.explanation_audio_hash) {
                     setTimeout(() => {
-                        audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
+                        audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
                         audio.onended = null;
                         audio.play().catch(() => {});
                     }, 800);
                 }
             };
             audio.play().catch(() => {});
-        } else if (result.context_audio_hash) {
-            audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
+        } else if (result.explanation_audio_hash) {
+            audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
             audio.hidden = false;
             audio.play().catch(() => {});
         }
