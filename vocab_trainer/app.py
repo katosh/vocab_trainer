@@ -312,10 +312,10 @@ async def api_session_start():
                     seen_words.add(q["target_word"].lower())
                     new_count += 1
 
-    # Shuffle for variety
+    # Shuffle pre-generated questions for variety (pending ones go after)
     random.shuffle(questions_data)
 
-    # 4. Fill remaining slots with pending generation
+    # 3. Fill remaining slots with pending generation
     remaining_slots = s.session_size - len(questions_data)
     if remaining_slots > 0:
         targets = select_session_words(db, remaining_slots + 10)
@@ -469,7 +469,10 @@ async def _get_next_question(session_id: int) -> dict:
             q_data = session["questions"][idx]
             if not q_data.get("generating"):
                 break
-        # If still generating after timeout, fall through to pending/skip logic
+        else:
+            # Timed out — skip this question
+            session["current_index"] += 1
+            return await _get_next_question(session_id)
 
     # Handle pending (on-the-fly generation)
     if "pending_cluster" in q_data:
