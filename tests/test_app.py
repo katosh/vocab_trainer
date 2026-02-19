@@ -14,6 +14,22 @@ from vocab_trainer.config import Settings
 from vocab_trainer.db import Database
 
 
+class FakeLLM:
+    """Fake LLM that returns valid question JSON for any cluster word."""
+
+    async def generate(self, prompt: str, temperature: float = 0.7) -> str:
+        return json.dumps({
+            "stem": "The ___ answer was surprisingly brief.",
+            "choices": ["terse", "concise", "pithy", "laconic"],
+            "correct_index": 0,
+            "explanation": "Terse implies rudeness.",
+            "context_sentence": "The terse answer was surprisingly brief.",
+        })
+
+    def name(self) -> str:
+        return "fake-llm"
+
+
 @pytest.fixture
 def test_app(tmp_path):
     """Set up test app with temporary database and settings."""
@@ -29,11 +45,13 @@ def test_app(tmp_path):
     app_module._settings = settings
     app_module._active_sessions.clear()
 
-    client = TestClient(app, raise_server_exceptions=False)
+    # Patch save_settings and _get_llm so tests never hit real config/LLM
+    with patch("vocab_trainer.app.save_settings"), \
+         patch("vocab_trainer.app._get_llm", return_value=FakeLLM()):
+        client = TestClient(app, raise_server_exceptions=False)
+        yield client, db, settings
+        client.close()
 
-    yield client, db, settings
-
-    client.close()
     db.close()
     app_module._db = None
     app_module._settings = None
@@ -99,9 +117,7 @@ class TestSettingsAPI:
 
     def test_update_settings(self, test_app):
         client, _, settings = test_app
-        # Patch save_settings so it doesn't write to the real config.json
-        with patch("vocab_trainer.app.save_settings"):
-            resp = client.put("/api/settings", json={"session_size": 30})
+        resp = client.put("/api/settings", json={"session_size": 30})
         assert resp.status_code == 200
         data = resp.json()
         assert data["session_size"] == 30

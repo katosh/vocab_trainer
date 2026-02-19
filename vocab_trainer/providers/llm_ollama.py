@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import logging
+import time
+
 import httpx
 
 from vocab_trainer.providers.base import LLMProvider
+
+log = logging.getLogger("vocab_trainer.llm")
 
 
 class OllamaProvider(LLMProvider):
@@ -11,6 +16,8 @@ class OllamaProvider(LLMProvider):
         self.model = model
 
     async def generate(self, prompt: str, temperature: float = 0.7) -> str:
+        log.info("── PROMPT (%s) ──\n%s", self.model, prompt)
+        t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{self.base_url}/api/generate",
@@ -22,7 +29,12 @@ class OllamaProvider(LLMProvider):
                 },
             )
             resp.raise_for_status()
-            return resp.json()["response"]
+            data = resp.json()
+        elapsed = time.monotonic() - t0
+        response = data["response"]
+        tokens = data.get("eval_count", "?")
+        log.info("── RESPONSE (%.1fs, %s tokens) ──\n%s", elapsed, tokens, response)
+        return response
 
     def name(self) -> str:
         return f"ollama/{self.model}"

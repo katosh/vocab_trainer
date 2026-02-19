@@ -330,6 +330,45 @@ nav {
     border-radius: 6px;
 }
 
+/* Choice details (post-answer) */
+.choice-details {
+    text-align: left;
+    margin-bottom: 16px;
+}
+
+.choice-details h4 {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+}
+
+.choice-detail {
+    padding: 8px 12px;
+    margin-bottom: 4px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    background: var(--bg);
+    border-left: 3px solid var(--border);
+}
+
+.choice-detail.correct {
+    border-left-color: var(--success);
+}
+
+.choice-detail strong {
+    color: var(--text);
+}
+
+.choice-detail .distinction {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+    font-style: italic;
+}
+
 /* Summary */
 #quiz-summary {
     text-align: center;

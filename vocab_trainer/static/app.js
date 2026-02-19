@@ -91,14 +91,23 @@ async function startSession() {
         const data = await api('/api/session/start', 'POST');
         if (data.error) {
             showQuizState('idle');
-            alert(data.error);
+            switchView('dashboard');
+            showMessage('dashboard-message', data.error, 'error');
+            return;
+        }
+        if (data.session_complete && !data.stem) {
+            showQuizState('idle');
+            switchView('dashboard');
+            showMessage('dashboard-message',
+                'No questions available. Generate questions first, or check your LLM provider.', 'error');
             return;
         }
         currentSessionId = data.session_id;
         showQuestion(data);
     } catch (e) {
         showQuizState('idle');
-        alert('Failed to start session: ' + e.message);
+        switchView('dashboard');
+        showMessage('dashboard-message', 'Failed to start session: ' + e.message, 'error');
     }
 }
 
@@ -189,6 +198,26 @@ async function submitAnswer(selectedIndex, questionData) {
 
         document.getElementById('explanation').textContent = result.explanation;
         document.getElementById('context-sentence').textContent = result.context_sentence;
+
+        // Render choice details (meanings + why not)
+        const detailsEl = document.getElementById('choice-details');
+        detailsEl.innerHTML = '';
+        if (questionData.choice_details && questionData.choice_details.length) {
+            const heading = document.createElement('h4');
+            heading.textContent = 'All choices';
+            detailsEl.appendChild(heading);
+
+            questionData.choice_details.forEach((d, i) => {
+                if (!d.meaning) return;
+                const item = document.createElement('div');
+                const isCorrect = i === questionData.correct_index;
+                item.className = 'choice-detail' + (isCorrect ? ' correct' : '');
+                item.innerHTML =
+                    `<strong>${d.word}</strong> — ${d.meaning}` +
+                    (d.distinction ? `<span class="distinction">${d.distinction}</span>` : '');
+                detailsEl.appendChild(item);
+            });
+        }
 
         // Audio
         if (result.audio_hash) {

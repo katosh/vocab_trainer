@@ -4,10 +4,13 @@
     "tts_provider": "edge-tts",
     "tts_voice": "en-US-GuyNeural",
     "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
-    "session_size": 30,
-    "new_words_per_session": 10,
-    "vocab_files": [],
-    "audio_cache_dir": "/private/var/folders/h_/5f32jgps7yq4np44vpfbx4300000gn/T/pytest-of-dotto/pytest-15/test_update_settings0/audio",
-    "db_path": "/private/var/folders/h_/5f32jgps7yq4np44vpfbx4300000gn/T/pytest-of-dotto/pytest-15/test_update_settings0/test.db",
+    "session_size": 20,
+    "new_words_per_session": 11,
+    "vocab_files": [
+        "../vocabulary.md",
+        "../vocabulary_distinctions.md"
+    ],
+    "audio_cache_dir": "audio_cache",
+    "db_path": "progress.db",
     "ollama_url": "http://localhost:11434"
 }

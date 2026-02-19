@@ -86,6 +86,13 @@ def _validate_question(data: dict, target_word: str) -> bool:
     lower_choices = [c.lower().strip() for c in data["choices"]]
     if len(set(lower_choices)) != 4:
         return False
+    # Stem must have a blank
+    if "___" not in data["stem"] and "___" not in data.get("stem", ""):
+        return False
+    # Context sentence should contain the target word (or a form of it)
+    ctx = data.get("context_sentence", "").lower()
+    if target_word.lower() not in ctx:
+        return False
     return True
 
 

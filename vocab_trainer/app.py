@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -159,20 +162,20 @@ async def api_session_start():
     s = get_settings()
 
     session_id = db.start_session()
-    words = select_session_words(db, s.session_size, s.new_words_per_session)
 
-    if not words:
-        return {"error": "No words available. Run import first.", "session_id": None}
+    # 1. Draw from the question bank (SRS-prioritized)
+    banked = db.get_session_questions(limit=s.session_size)
+    questions_data = list(banked)
+    seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
 
-    # Get or generate questions for these words
-    questions_data = []
-    for word in words:
-        # Try to find existing questions for this word
-        existing = db.get_questions_for_word(word, limit=1)
-        if existing:
-            questions_data.append(existing[0])
-        else:
-            # Find the word's cluster and generate on the fly
+    # 2. Fill remaining slots with on-the-fly generation targets
+    remaining = s.session_size - len(questions_data)
+    if remaining > 0:
+        targets = select_session_words(db, remaining, s.new_words_per_session)
+        for word in targets:
+            if word.lower() in seen_words:
+                continue
+            # Find the word's cluster for on-the-fly generation
             all_clusters = db.get_all_clusters()
             for cl in all_clusters:
                 cw = db.get_cluster_words(cl["id"])
@@ -182,12 +185,13 @@ async def api_session_start():
                         "pending_cluster": cl,
                         "pending_word": word_info,
                     })
+                    seen_words.add(word.lower())
                     break
-            else:
-                # Word not in any cluster — try unused questions from the bank
-                unused = db.get_unused_questions(limit=1)
-                if unused:
-                    questions_data.append(unused[0])
+            if len(questions_data) >= s.session_size:
+                break
+
+    if not questions_data:
+        return {"error": "No questions available. Import vocabulary and generate questions first.", "session_id": None}
 
     # Store session state
     _active_sessions[session_id] = {
@@ -312,11 +316,23 @@ async def _get_next_question(session_id: int) -> dict:
                 }
                 session["questions"][idx] = q_data
             else:
-                # Generation failed — skip
+                # Generation failed — skip this question
                 session["current_index"] += 1
+                if session["current_index"] >= len(session["questions"]):
+                    del _active_sessions[session_id]
+                    return {
+                        "error": "Question generation failed. Check that your LLM provider is running and configured.",
+                        "session_id": session_id,
+                    }
                 return await _get_next_question(session_id)
         except Exception as e:
             session["current_index"] += 1
+            if session["current_index"] >= len(session["questions"]):
+                del _active_sessions[session_id]
+                return {
+                    "error": f"LLM provider error: {e}",
+                    "session_id": session_id,
+                }
             return await _get_next_question(session_id)
 
     # Parse choices
@@ -324,16 +340,37 @@ async def _get_next_question(session_id: int) -> dict:
     if isinstance(choices, str):
         choices = json.loads(choices)
 
+    # Look up meanings/distinctions for all choices from the cluster
+    choice_details = []
+    cluster_title = q_data.get("cluster_title", "")
+    if cluster_title:
+        db = get_db()
+        cluster = db.get_cluster_by_title(cluster_title)
+        if cluster:
+            cw = db.get_cluster_words(cluster["id"])
+            cw_map = {w["word"].lower(): w for w in cw}
+            for c in choices:
+                info = cw_map.get(c.lower())
+                if info:
+                    choice_details.append({
+                        "word": c,
+                        "meaning": info.get("meaning", ""),
+                        "distinction": info.get("distinction", ""),
+                    })
+                else:
+                    choice_details.append({"word": c, "meaning": "", "distinction": ""})
+
     question = {
         "session_id": session_id,
         "question_type": q_data.get("question_type", "fill_blank"),
         "stem": q_data["stem"],
         "choices": choices,
+        "choice_details": choice_details,
         "correct_index": q_data["correct_index"],
         "correct_word": q_data.get("correct_word", q_data.get("target_word", "")),
         "explanation": q_data.get("explanation", ""),
         "context_sentence": q_data.get("context_sentence", ""),
-        "cluster_title": q_data.get("cluster_title", ""),
+        "cluster_title": cluster_title,
         "id": q_data.get("id", ""),
         "progress": {
             "current": idx + 1,

@@ -216,6 +216,36 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_session_questions(self, limit: int = 20) -> list[dict]:
+        """Pull banked questions ordered by SRS priority.
+
+        Priority:
+        1. Due words the user previously got wrong (struggling)
+        2. Other due words (spaced repetition schedule)
+        3. Never-reviewed words (new material)
+        Least-shown questions preferred within each tier.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        rows = self.conn.execute("""
+            SELECT q.*,
+                CASE
+                    WHEN r.word IS NOT NULL AND r.next_review <= ?
+                         AND r.total_incorrect > r.total_correct
+                        THEN 0  -- struggling + due
+                    WHEN r.word IS NOT NULL AND r.next_review <= ?
+                        THEN 1  -- due
+                    WHEN r.word IS NULL
+                        THEN 2  -- new
+                    ELSE 3      -- not yet due
+                END AS priority
+            FROM questions q
+            LEFT JOIN reviews r ON q.target_word = r.word
+            WHERE priority < 3
+            ORDER BY priority ASC, q.times_shown ASC, RANDOM()
+            LIMIT ?
+        """, (now, now, limit)).fetchall()
+        return [dict(r) for r in rows]
+
     def record_question_shown(self, question_id: str, correct: bool) -> None:
         if correct:
             self.conn.execute(
@@ -292,6 +322,53 @@ class Database:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_new_cluster_words(self, limit: int = 10) -> list[str]:
+        """Cluster words that have never been reviewed (can generate questions).
+
+        Prioritizes words that already have banked questions (instant start),
+        then fills with random unreviewed cluster words.
+        """
+        # First: unreviewed words WITH banked questions (no generation needed)
+        banked = self.conn.execute(
+            "SELECT DISTINCT q.target_word FROM questions q "
+            "JOIN cluster_words cw ON q.target_word = cw.word "
+            "LEFT JOIN reviews r ON q.target_word = r.word "
+            "WHERE r.word IS NULL ORDER BY RANDOM() LIMIT ?",
+            (limit,),
+        ).fetchall()
+        words = [r[0] for r in banked]
+        if len(words) >= limit:
+            return words[:limit]
+
+        # Then: unreviewed cluster words without banked questions
+        seen = set(words)
+        remaining = limit - len(words)
+        rows = self.conn.execute(
+            "SELECT DISTINCT cw.word FROM cluster_words cw "
+            "LEFT JOIN reviews r ON cw.word = r.word "
+            "WHERE r.word IS NULL ORDER BY RANDOM() LIMIT ?",
+            (remaining + len(seen),),  # fetch extra to account for overlap
+        ).fetchall()
+        for r in rows:
+            if r[0] not in seen:
+                words.append(r[0])
+                seen.add(r[0])
+                if len(words) >= limit:
+                    break
+        return words
+
+    def get_due_cluster_words(self, limit: int = 50) -> list[str]:
+        """Cluster words that are due for review."""
+        now = datetime.now(timezone.utc).isoformat()
+        rows = self.conn.execute(
+            "SELECT r.word FROM reviews r "
+            "JOIN cluster_words cw ON r.word = cw.word "
+            "WHERE r.next_review <= ? "
+            "ORDER BY r.next_review ASC LIMIT ?",
+            (now, limit),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def get_reviewed_word_count(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) FROM reviews").fetchone()

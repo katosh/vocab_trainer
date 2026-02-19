@@ -94,25 +94,27 @@ def select_session_words(
 ) -> list[str]:
     """Select words for a training session.
 
+    Only selects words that are in clusters (can generate questions).
+
     Priority:
-    1. Overdue words (sorted by staleness — most overdue first)
-    2. New words (never reviewed) up to new_word_limit
+    1. Overdue cluster words (sorted by staleness — most overdue first)
+    2. New cluster words (never reviewed) up to new_word_limit
     """
     words: list[str] = []
 
-    # 1. Due words
-    due = db.get_due_words(limit=session_size)
-    for r in due:
-        words.append(r["word"])
+    # 1. Due cluster words
+    due = db.get_due_cluster_words(limit=session_size)
+    for w in due:
+        words.append(w)
         if len(words) >= session_size:
             return words
 
-    # 2. New words
+    # 2. New cluster words
     remaining = min(new_word_limit, session_size - len(words))
     if remaining > 0:
-        new = db.get_new_words(limit=remaining)
+        new = db.get_new_cluster_words(limit=remaining)
         for w in new:
-            words.append(w["word"])
+            words.append(w)
             if len(words) >= session_size:
                 break
 

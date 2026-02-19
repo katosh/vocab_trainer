@@ -14,7 +14,7 @@ elevenlabs = ["elevenlabs>=1.0"]
 anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.50"]
 all = ["vocab-trainer[elevenlabs,anthropic,openai]"]
-test = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+test = ["pytest>=8.0", "pytest-asyncio>=0.24,<1.0"]
 
 [project.scripts]
 vocab-trainer = "vocab_trainer.__main__:main"
