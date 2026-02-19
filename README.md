@@ -25,39 +25,61 @@ After each answer, the trainer becomes an interactive tutor:
 ```bash
 cd vocab_trainer
 
-# 1. Import vocabulary into SQLite
-uv run python -m vocab_trainer import
-
-# 2. Start Ollama + pull a model (one-time setup)
+# 1. Start Ollama + pull a model (one-time setup)
 brew install ollama          # macOS
 brew services start ollama   # run as background service
 ollama pull qwen3:8b         # ~5 GB download
 
-# 3. Pre-generate questions
-uv run python -m vocab_trainer generate --count 20
-
-# 4. Launch the web UI
+# 2. Launch the web UI (auto-imports vocabulary on first start)
 uv run python -m vocab_trainer serve
 # Open http://localhost:8765
 ```
 
-You can also import and generate questions from the web UI's Dashboard view.
+The bundled vocabulary files in `data/` are imported automatically on startup. You can also pre-generate questions from the Dashboard or via CLI:
+
+```bash
+uv run python -m vocab_trainer generate --count 20
+```
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `uv run python -m vocab_trainer import` | Parse vocabulary markdown files into SQLite |
-| `uv run python -m vocab_trainer generate --count N` | Pre-generate N questions using the configured LLM |
 | `uv run python -m vocab_trainer serve [--port PORT]` | Launch web app (default port 8765) |
 | `uv run python -m vocab_trainer serve --no-auto-import` | Launch without re-importing changed vocab files |
+| `uv run python -m vocab_trainer import` | Manually import vocabulary files into SQLite |
+| `uv run python -m vocab_trainer generate --count N` | Pre-generate N questions using the configured LLM |
 | `uv run python -m vocab_trainer stats` | Print progress summary to terminal |
 
 ## Vocabulary Data
 
-Bundled vocabulary files live in `data/` and are auto-imported on startup when they change. See [`data/README.md`](data/README.md) for details on editing or replacing them.
+Bundled vocabulary files live in `data/` and are auto-imported on startup when they change. When `vocab_files` in `config.json` is empty (the default), all `*.md` files in `data/` are discovered automatically. Set explicit paths to use files from elsewhere.
 
-When `vocab_files` in `config.json` is empty (the default), all `*.md` files in `data/` are discovered automatically. Set explicit paths to use files from elsewhere.
+The parser recognizes two markdown table formats:
+
+**Word lists** — 2-column tables (`Word | Definition`) under any heading. Each heading becomes a category. Words are imported individually for general vocabulary building.
+
+```markdown
+## Cognition and Insight
+
+| Word | Definition |
+|------|------------|
+| **perspicacious** | having keen insight; perceptive |
+| **sagacious** | having keen practical wisdom and judgment |
+```
+
+**Distinction clusters** — 3-column tables (`Word | Meaning | Distinction`) under a cluster heading. These form the synonym groups that drive quiz generation. The heading names the cluster, and each row explains how that word differs from the others.
+
+```markdown
+## Criticizing Someone
+
+| Word | What it really means | Key distinction |
+|------|---------------------|-----------------|
+| **admonish** | warn or counsel firmly but gently | corrective, not punitive |
+| **rebuke** | criticize sharply and sternly | a sudden, direct verbal blow |
+```
+
+See [`data/README.md`](data/README.md) for more details on editing or replacing the bundled files.
 
 ## How It Works
 
