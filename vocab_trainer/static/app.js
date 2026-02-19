@@ -396,25 +396,11 @@ async function submitAnswer(selectedIndex, questionData) {
             was_correct: result.correct,
         };
 
-        // Audio: context sentence → pause → explanation
+        // Audio: narrate the completed sentence only
         stopAllAudio();
         const audio = document.getElementById('tts-audio');
         if (result.context_audio_hash) {
             audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
-            audio.hidden = false;
-            audio.onended = () => {
-                if (result.explanation_audio_hash) {
-                    pendingAudioTimeout = setTimeout(() => {
-                        pendingAudioTimeout = null;
-                        audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
-                        audio.onended = null;
-                        audio.play().catch(() => {});
-                    }, 800);
-                }
-            };
-            audio.play().catch(() => {});
-        } else if (result.explanation_audio_hash) {
-            audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
             audio.hidden = false;
             audio.play().catch(() => {});
         }
