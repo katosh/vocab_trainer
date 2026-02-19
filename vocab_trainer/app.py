@@ -493,6 +493,15 @@ async def _get_next_question(session_id: int) -> dict:
                 }
                 choice_details.append(detail)
 
+    # Shuffle choices so the correct answer isn't always in the same slot
+    correct_index = q_data["correct_index"]
+    indices = list(range(len(choices)))
+    random.shuffle(indices)
+    choices = [choices[i] for i in indices]
+    if choice_details:
+        choice_details = [choice_details[i] for i in indices]
+    correct_index = indices.index(correct_index)
+
     times_shown = q_data.get("times_shown", 0) or 0
     question = {
         "session_id": session_id,
@@ -500,7 +509,7 @@ async def _get_next_question(session_id: int) -> dict:
         "stem": q_data["stem"],
         "choices": choices,
         "choice_details": choice_details,
-        "correct_index": q_data["correct_index"],
+        "correct_index": correct_index,
         "correct_word": q_data.get("correct_word", q_data.get("target_word", "")),
         "explanation": q_data.get("explanation", ""),
         "context_sentence": q_data.get("context_sentence", ""),
