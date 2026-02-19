@@ -30,7 +30,7 @@ uv run python -m vocab_trainer import
 
 # 2. Start Ollama + pull a model (one-time setup)
 brew install ollama          # macOS
-ollama serve &               # start the server
+brew services start ollama   # run as background service
 ollama pull qwen3:8b         # ~5 GB download
 
 # 3. Pre-generate questions
@@ -130,7 +130,7 @@ All providers are swappable via `config.json` or the Settings page in the web UI
 
 | Provider | Config value | Requirements |
 |----------|-------------|--------------|
-| Ollama (default) | `"ollama"` | `ollama serve` running locally, model pulled |
+| Ollama (default) | `"ollama"` | `brew services start ollama`, model pulled |
 | Anthropic | `"anthropic"` | `ANTHROPIC_API_KEY` env var |
 | OpenAI | `"openai"` | `OPENAI_API_KEY` env var |
 
