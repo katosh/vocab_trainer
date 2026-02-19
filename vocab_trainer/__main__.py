@@ -44,12 +44,11 @@ def main():
         sys.exit(1)
 
 
-def _parse_port(args: list[str]) -> int:
-    port = 8765
+def _parse_flag(args: list[str], name: str, default: str) -> str:
     for i, a in enumerate(args):
-        if a == "--port" and i + 1 < len(args):
-            port = int(args[i + 1])
-    return port
+        if a == name and i + 1 < len(args):
+            return args[i + 1]
+    return default
 
 
 def _read_pid() -> int | None:
@@ -117,13 +116,19 @@ def _serve(args: list[str]):
     if "--no-auto-import" in args:
         os.environ["VOCAB_TRAINER_NO_AUTO_IMPORT"] = "1"
 
-    port = _parse_port(args)
+    port = int(_parse_flag(args, "--port", "8765"))
+    host = _parse_flag(args, "--host", "127.0.0.1")
     _write_pid()
 
-    print(f"Starting Vocab Trainer on http://localhost:{port}")
+    if host == "0.0.0.0":
+        import socket
+        local_ip = socket.gethostbyname(socket.gethostname())
+        print(f"Starting Vocab Trainer on http://{local_ip}:{port}")
+    else:
+        print(f"Starting Vocab Trainer on http://{host}:{port}")
     print("Press Ctrl+C to stop\n")
     try:
-        uvicorn.run("vocab_trainer.app:app", host="127.0.0.1", port=port, reload=False)
+        uvicorn.run("vocab_trainer.app:app", host=host, port=port, reload=False)
     finally:
         _remove_pid()
         os.environ.pop("VOCAB_TRAINER_NO_AUTO_IMPORT", None)
