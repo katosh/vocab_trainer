@@ -394,17 +394,8 @@ async function submitAnswer(selectedIndex, questionData) {
             choice_details: questionData.choice_details || [],
         };
 
-        // Auto-compare: set up narration queue before audio chain
-        if (autoCompareEnabled) {
-            narrationQueue = new NarrationQueue();
-            narrationQueue.held = true;
-        }
-
-        // Audio: context sentence → pause → explanation → release narration
+        // Audio: context sentence → pause → explanation
         const audio = document.getElementById('tts-audio');
-        const audioChainDone = () => {
-            if (narrationQueue) narrationQueue.release();
-        };
         if (result.context_audio_hash) {
             audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
             audio.hidden = false;
@@ -413,27 +404,16 @@ async function submitAnswer(selectedIndex, questionData) {
                     pendingAudioTimeout = setTimeout(() => {
                         pendingAudioTimeout = null;
                         audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
-                        audio.onended = () => audioChainDone();
-                        audio.play().catch(() => audioChainDone());
+                        audio.onended = null;
+                        audio.play().catch(() => {});
                     }, 800);
-                } else {
-                    audioChainDone();
                 }
             };
-            audio.play().catch(() => audioChainDone());
+            audio.play().catch(() => {});
         } else if (result.explanation_audio_hash) {
             audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
             audio.hidden = false;
-            audio.onended = () => audioChainDone();
-            audio.play().catch(() => audioChainDone());
-        } else {
-            audioChainDone();
-        }
-
-        // Fire auto-compare LLM request (runs in parallel with audio)
-        if (autoCompareEnabled && currentQuestionContext) {
-            const msg = buildAutoCompareMessage(questionData, selectedIndex, result.correct);
-            sendChatMessage(msg, { narrate: true });
+            audio.play().catch(() => {});
         }
 
         // Update progress text
@@ -549,22 +529,8 @@ const CHAT_PROMPTS = {
     etymology:
         'Explain the etymology and deeper meaning of "{word}". Include its roots (Latin, Greek, etc.), how the meaning evolved, and any interesting historical context.',
     compare:
-        'Compare all four choices ({choices}) in detail. For each, explain exactly when you\'d use it vs the others, with a concrete example sentence highlighting the distinction.',
+        'Compare all four choices ({choices}). For each word, explain what it means, when you\'d use it vs the others, and give 2 example sentences. Write in flowing conversational prose — no tables, no bullet points, no markdown formatting.',
 };
-
-function buildAutoCompareMessage(questionData, selectedIndex, correct) {
-    const chosen = questionData.choices[selectedIndex];
-    const correctWord = questionData.choices[questionData.correct_index];
-    const allChoices = questionData.choices.join(', ');
-
-    let msg = correct
-        ? `I chose "${chosen}" and got it right.`
-        : `I chose "${chosen}" but the correct answer was "${correctWord}".`;
-    msg += ` The choices were: ${allChoices}.`;
-    msg += `\n\nExplain why "${correctWord}" is the best fit here, then walk through each of the four words — what it means, when you'd typically use it, and give 2 example sentences for each. Write in flowing conversational prose — no tables, no bullet points, no markdown — this will be narrated aloud.`;
-
-    return msg;
-}
 
 let selectedComplexity = 'simple';
 
@@ -691,8 +657,9 @@ class NarrationQueue {
         this.sentences = [];
         this.currentIndex = 0;
         this.playing = false;
-        this.held = false;
         this.stopped = false;
+        this.flushed = false;
+        this.onDone = null;
     }
 
     feedToken(token) {
@@ -741,6 +708,8 @@ class NarrationQueue {
         const remaining = this.buffer.trim();
         this.buffer = '';
         if (remaining) this._enqueueSentence(remaining);
+        this.flushed = true;
+        this._tryPlay();
     }
 
     stop() {
@@ -748,11 +717,7 @@ class NarrationQueue {
         this.sentences.forEach(s => {
             if (s.audio) { s.audio.pause(); s.audio.currentTime = 0; }
         });
-    }
-
-    release() {
-        this.held = false;
-        this._tryPlay();
+        if (this.onDone) { this.onDone(); this.onDone = null; }
     }
 
     _enqueueSentence(text) {
@@ -803,11 +768,14 @@ class NarrationQueue {
     }
 
     _tryPlay() {
-        if (this.stopped || this.held || this.playing) return;
+        if (this.stopped || this.playing) return;
         while (this.currentIndex < this.sentences.length && this.sentences[this.currentIndex].failed) {
             this.currentIndex++;
         }
-        if (this.currentIndex >= this.sentences.length) return;
+        if (this.currentIndex >= this.sentences.length) {
+            if (this.flushed && this.onDone) { this.onDone(); this.onDone = null; }
+            return;
+        }
         const sentence = this.sentences[this.currentIndex];
         if (!sentence.ready || !sentence.audio) return;
         this.playing = true;
@@ -830,12 +798,18 @@ function simpleMarkdown(text) {
         .replace(/\n/g, '<br>');
 }
 
-async function sendChatMessage(message, opts = {}) {
+async function sendChatMessage(message) {
     if (chatStreaming) return;
     chatStreaming = true;
 
     // Disable buttons while streaming
     document.querySelectorAll('.chat-btn, .chat-send-btn, .word-action-btn').forEach(b => b.disabled = true);
+
+    // Set up auto-narration if enabled
+    const autoNarrating = autoCompareEnabled;
+    if (autoNarrating) {
+        narrationQueue = new NarrationQueue();
+    }
 
     appendChatMessage('user', message);
     const assistantEl = appendChatMessage('assistant', '');
@@ -868,7 +842,7 @@ async function sendChatMessage(message, opts = {}) {
                     const data = JSON.parse(line.slice(6));
                     if (data.token) {
                         fullResponse += data.token;
-                        if (opts.narrate && narrationQueue) narrationQueue.feedToken(data.token);
+                        if (autoNarrating && narrationQueue) narrationQueue.feedToken(data.token);
                         assistantEl.innerHTML = simpleMarkdown(fullResponse);
                         const container = document.getElementById('chat-messages');
                         container.scrollTop = container.scrollHeight;
@@ -883,10 +857,35 @@ async function sendChatMessage(message, opts = {}) {
             }
         }
 
-        if (opts.narrate && narrationQueue) narrationQueue.flush();
+        if (autoNarrating && narrationQueue) narrationQueue.flush();
         chatHistory.push({ role: 'user', content: message });
         chatHistory.push({ role: 'assistant', content: fullResponse });
-        if (fullResponse) addNarrateButton(assistantEl, fullResponse);
+
+        if (fullResponse) {
+            if (autoNarrating && narrationQueue && !narrationQueue.stopped) {
+                // Show stop button — narration is already playing
+                const bar = document.createElement('div');
+                bar.className = 'chat-msg-actions';
+                const btn = document.createElement('button');
+                btn.className = 'narrate-btn';
+                btn.textContent = '\u25A0 Stop';
+                const queue = narrationQueue;
+                const switchToNarrate = () => {
+                    btn.textContent = '\u25B6 Narrate';
+                    btn.disabled = false;
+                    btn.onclick = () => narrateText(btn, fullResponse);
+                };
+                btn.onclick = () => {
+                    queue.stop();
+                    switchToNarrate();
+                };
+                queue.onDone = switchToNarrate;
+                bar.appendChild(btn);
+                assistantEl.appendChild(bar);
+            } else {
+                addNarrateButton(assistantEl, fullResponse);
+            }
+        }
     } catch (e) {
         assistantEl.innerHTML = simpleMarkdown(`[Connection error: ${e.message}]`);
     } finally {
