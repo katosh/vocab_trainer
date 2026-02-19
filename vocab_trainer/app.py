@@ -393,22 +393,32 @@ async def _get_next_question(session_id: int) -> dict:
     # Look up meanings/distinctions for all choices from the cluster
     choice_details = []
     cluster_title = q_data.get("cluster_title", "")
+
+    # Parse stored per-choice explanations (from LLM generation)
+    raw_explanations = q_data.get("choice_explanations_json", "[]")
+    if isinstance(raw_explanations, str):
+        try:
+            per_choice = json.loads(raw_explanations)
+        except (json.JSONDecodeError, TypeError):
+            per_choice = []
+    else:
+        per_choice = raw_explanations or []
+
     if cluster_title:
         db = get_db()
         cluster = db.get_cluster_by_title(cluster_title)
         if cluster:
             cw = db.get_cluster_words(cluster["id"])
             cw_map = {w["word"].lower(): w for w in cw}
-            for c in choices:
+            for i, c in enumerate(choices):
                 info = cw_map.get(c.lower())
-                if info:
-                    choice_details.append({
-                        "word": c,
-                        "meaning": info.get("meaning", ""),
-                        "distinction": info.get("distinction", ""),
-                    })
-                else:
-                    choice_details.append({"word": c, "meaning": "", "distinction": ""})
+                detail = {
+                    "word": c,
+                    "meaning": info.get("meaning", "") if info else "",
+                    "distinction": info.get("distinction", "") if info else "",
+                    "why": per_choice[i] if i < len(per_choice) else "",
+                }
+                choice_details.append(detail)
 
     question = {
         "session_id": session_id,

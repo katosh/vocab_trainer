@@ -160,6 +160,7 @@ async def generate_question(
                 context_sentence=data["context_sentence"],
                 cluster_title=cluster["title"],
                 llm_provider=llm.name(),
+                choice_explanations=data.get("choice_explanations", []),
             )
         except Exception as e:
             if attempt == MAX_RETRIES - 1:

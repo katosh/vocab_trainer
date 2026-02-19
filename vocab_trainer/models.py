@@ -38,3 +38,4 @@ class Question:
     context_sentence: str  # full sentence for TTS
     cluster_title: str | None
     llm_provider: str
+    choice_explanations: list[str] = field(default_factory=list)

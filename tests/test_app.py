@@ -26,6 +26,12 @@ class FakeLLM:
             "choices": ["terse", "concise", "pithy", "laconic"],
             "correct_index": 0,
             "explanation": "Terse implies rudeness.",
+            "choice_explanations": [
+                "Correct: terse implies brevity bordering on rudeness, fitting the cold tone.",
+                "Concise means brief but clear — no negative connotation here.",
+                "Pithy means concise and meaningful — doesn't imply coldness.",
+                "Laconic means using few words, but without the rude edge of terse.",
+            ],
             "context_sentence": "The terse answer was surprisingly brief.",
         })
 

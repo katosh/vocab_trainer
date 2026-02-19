@@ -228,7 +228,8 @@ async function submitAnswer(selectedIndex, questionData) {
 
             let html = `<div class="choice-detail-text"><strong>${d.word}</strong>`;
             if (d.meaning) html += ` — ${d.meaning}`;
-            if (d.distinction) html += `<span class="distinction">${d.distinction}</span>`;
+            if (d.why) html += `<span class="choice-why">${d.why}</span>`;
+            else if (d.distinction) html += `<span class="distinction">${d.distinction}</span>`;
             html += '</div>';
             html += `<div class="choice-detail-actions">` +
                 `<button class="word-action-btn" data-word="${d.word}" data-action="context">Context</button>` +

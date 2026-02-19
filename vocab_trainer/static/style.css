@@ -369,6 +369,17 @@ nav {
     font-style: italic;
 }
 
+.choice-detail .choice-why {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-top: 3px;
+}
+
+.choice-detail.correct .choice-why {
+    color: var(--success);
+}
+
 .choice-detail-actions {
     display: flex;
     gap: 4px;

@@ -103,6 +103,10 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE questions ADD COLUMN consecutive_correct INTEGER DEFAULT 0"
             )
+        if "choice_explanations_json" not in cols:
+            self.conn.execute(
+                "ALTER TABLE questions ADD COLUMN choice_explanations_json TEXT DEFAULT '[]'"
+            )
         self.conn.commit()
 
     def close(self) -> None:
@@ -195,8 +199,9 @@ class Database:
         self.conn.execute(
             "INSERT OR REPLACE INTO questions "
             "(id, question_type, target_word, stem, choices_json, correct_index, "
-            "explanation, context_sentence, cluster_title, llm_provider, generated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "explanation, context_sentence, cluster_title, llm_provider, generated_at, "
+            "choice_explanations_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 q.id,
                 q.question_type,
@@ -209,6 +214,7 @@ class Database:
                 q.cluster_title,
                 q.llm_provider,
                 datetime.now(timezone.utc).isoformat(),
+                json.dumps(q.choice_explanations),
             ),
         )
         self.conn.commit()
