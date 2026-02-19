@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 from pathlib import Path
 
@@ -195,7 +196,8 @@ async def startup():
         return  # Already initialized (e.g. by tests)
     _settings = load_settings()
     _db = Database(_settings.db_full_path)
-    _auto_import_if_changed(_db, _settings)
+    if not os.environ.get("VOCAB_TRAINER_NO_AUTO_IMPORT"):
+        _auto_import_if_changed(_db, _settings)
     await _ensure_question_buffer()
 
 

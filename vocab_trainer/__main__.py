@@ -1,7 +1,7 @@
 """CLI entry point for vocab-trainer.
 
 Usage:
-  uv run python -m vocab_trainer serve [--port PORT]
+  uv run python -m vocab_trainer serve [--port PORT] [--no-auto-import]
   uv run python -m vocab_trainer stop
   uv run python -m vocab_trainer restart [--port PORT]
   uv run python -m vocab_trainer status
@@ -114,6 +114,9 @@ def _serve(args: list[str]):
         print(f"Server already running (PID {existing}). Use 'restart' or 'stop' first.")
         sys.exit(1)
 
+    if "--no-auto-import" in args:
+        os.environ["VOCAB_TRAINER_NO_AUTO_IMPORT"] = "1"
+
     port = _parse_port(args)
     _write_pid()
 
@@ -123,6 +126,7 @@ def _serve(args: list[str]):
         uvicorn.run("vocab_trainer.app:app", host="127.0.0.1", port=port, reload=False)
     finally:
         _remove_pid()
+        os.environ.pop("VOCAB_TRAINER_NO_AUTO_IMPORT", None)
 
 
 def _import_vocab():

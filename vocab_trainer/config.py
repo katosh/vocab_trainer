@@ -13,7 +13,7 @@ DEFAULTS = {
     "tts_voice": "en-US-GuyNeural",
     "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
     "session_size": 20,
-    "vocab_files": ["../vocabulary.md", "../vocabulary_distinctions.md", "../vocabulary_upper_intermediate_unknown.md"],
+    "vocab_files": [],
     "audio_cache_dir": "audio_cache",
     "db_path": "progress.db",
     "ollama_url": "http://localhost:11434",
@@ -44,6 +44,10 @@ class Settings:
         return Path(__file__).resolve().parent.parent
 
     @property
+    def data_dir(self) -> Path:
+        return self.project_root / "data"
+
+    @property
     def db_full_path(self) -> Path:
         return self.project_root / self.db_path
 
@@ -52,8 +56,10 @@ class Settings:
         return self.project_root / self.audio_cache_dir
 
     def resolved_vocab_files(self) -> list[Path]:
-        root = self.project_root
-        return [root / f for f in self.vocab_files]
+        if self.vocab_files:
+            root = self.project_root
+            return [root / f for f in self.vocab_files]
+        return sorted(self.data_dir.glob("*.md"))
 
     def to_dict(self) -> dict:
         return {

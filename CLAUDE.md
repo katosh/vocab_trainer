@@ -15,6 +15,9 @@ uv run --extra all python -m pytest tests/test_app.py::test_session_flow -v
 # Start the web server (default port 8765)
 uv run python -m vocab_trainer serve
 
+# Start without auto-importing vocabulary on startup
+uv run python -m vocab_trainer serve --no-auto-import
+
 # Import vocabulary from markdown files into SQLite
 uv run python -m vocab_trainer import
 
@@ -80,3 +83,4 @@ App tests (`test_app.py`) use FastAPI's `TestClient` with a test lifespan that c
 - SQLite with WAL mode; parameterized queries for all DB operations
 - Config lives in `config.json` at project root; `Settings` dataclass enforces defaults
 - Database file (`progress.db`) and `audio_cache/` are gitignored
+- Bundled vocabulary files live in `data/` and are auto-discovered when `vocab_files` is empty in config

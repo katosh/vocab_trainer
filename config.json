@@ -5,12 +5,11 @@
     "tts_voice": "en-US-GuyNeural",
     "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
     "session_size": 20,
-    "vocab_files": [
-        "../vocabulary.md",
-        "../vocabulary_distinctions.md",
-        "../vocabulary_upper_intermediate_unknown.md"
-    ],
+    "vocab_files": [],
     "audio_cache_dir": "audio_cache",
     "db_path": "progress.db",
-    "ollama_url": "http://localhost:11434"
+    "ollama_url": "http://localhost:11434",
+    "min_ready_questions": 3,
+    "max_active_words": 50,
+    "archive_interval_days": 21
 }
