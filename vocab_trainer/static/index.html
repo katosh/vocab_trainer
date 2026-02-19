@@ -112,7 +112,7 @@
                         </div>
                         <div class="chat-messages" id="chat-messages"></div>
                         <div class="chat-input-row">
-                            <input type="text" id="chat-input" placeholder="Ask about these words...">
+                            <input type="text" id="chat-input" placeholder="Ask about these words..." autocomplete="off" data-1p-ignore>
                             <button id="chat-send" class="chat-send-btn">Send</button>
                         </div>
                     </div>
@@ -147,7 +147,7 @@
         <!-- Settings View -->
         <section id="view-settings" class="view">
             <h2>Settings</h2>
-            <form id="settings-form">
+            <form id="settings-form" data-1p-ignore>
                 <div class="form-group">
                     <label for="set-llm">LLM Provider</label>
                     <select id="set-llm">
@@ -158,7 +158,7 @@
                 </div>
                 <div class="form-group">
                     <label for="set-llm-model">LLM Model</label>
-                    <input id="set-llm-model" type="text" value="qwen3:8b">
+                    <input id="set-llm-model" type="text" value="qwen3:8b" autocomplete="off" data-1p-ignore>
                 </div>
                 <div class="form-group">
                     <label for="set-tts">TTS Provider</label>
@@ -170,7 +170,7 @@
                 </div>
                 <div class="form-group">
                     <label for="set-tts-voice">TTS Voice</label>
-                    <input id="set-tts-voice" type="text" value="en-US-GuyNeural">
+                    <input id="set-tts-voice" type="text" value="en-US-GuyNeural" autocomplete="off" data-1p-ignore>
                 </div>
                 <div class="form-group">
                     <label for="set-session-size">Session Size</label>
