@@ -359,6 +359,24 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_active_word_new_questions(self, limit: int = 10, exclude_words: set[str] | None = None) -> list[dict]:
+        """Unseen questions for words already in rotation (reinforcement, not new material)."""
+        rows = self.conn.execute(
+            "SELECT q.* FROM questions q "
+            "WHERE q.archived = 0 AND q.times_shown = 0 "
+            "AND q.target_word IN ("
+            "  SELECT DISTINCT target_word FROM questions "
+            "  WHERE archived = 0 AND times_shown > 0"
+            ") "
+            "ORDER BY RANDOM() LIMIT ?",
+            (limit,),
+        ).fetchall()
+        results = [dict(r) for r in rows]
+        if exclude_words:
+            lc = {w.lower() for w in exclude_words}
+            results = [r for r in results if r["target_word"].lower() not in lc]
+        return results
+
     def get_active_word_count(self) -> int:
         """Count distinct words currently in rotation (shown but not archived)."""
         row = self.conn.execute(

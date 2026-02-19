@@ -312,10 +312,20 @@ async def api_session_start():
                     seen_words.add(q["target_word"].lower())
                     new_count += 1
 
+    # 3. Fill remaining slots with unseen questions for already-active words
+    #    (reinforcement — doesn't introduce new words, bypasses the cap)
+    remaining_slots = s.session_size - len(questions_data)
+    if remaining_slots > 0:
+        active_qs = db.get_active_word_new_questions(limit=remaining_slots, exclude_words=seen_words)
+        for q in active_qs:
+            if q["target_word"].lower() not in seen_words:
+                questions_data.append(q)
+                seen_words.add(q["target_word"].lower())
+
     # Shuffle pre-generated questions for variety (pending ones go after)
     random.shuffle(questions_data)
 
-    # 3. Fill remaining slots with pending generation
+    # 4. Fill remaining slots with pending generation
     remaining_slots = s.session_size - len(questions_data)
     if remaining_slots > 0:
         targets = select_session_words(db, remaining_slots + 10)
