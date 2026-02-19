@@ -749,73 +749,80 @@ async def api_update_settings(request: Request):
 
 # ── API: Chat (LLM tutor) ───────────────────────────────────────────────
 
-def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
-    """Build a single prompt string with question context + conversation."""
-    lines = [
+def _build_chat_prompt(context: dict, history: list[dict], message: str) -> tuple[str, str]:
+    """Build a system message and conversation prompt for the chat LLM call.
+
+    Returns (system, prompt) — system carries the role, context, and
+    guidelines; prompt carries the conversation history and student message.
+    """
+    # ── System message ──
+    sys_lines = [
         "You are a vocabulary tutor helping a student master precise English word usage.",
         "The student just answered a quiz question. Here is the full context:",
         "",
         f"Question type: {context.get('question_type', 'fill_blank')}",
     ]
     if context.get("cluster_title"):
-        lines.append(f"Word cluster: {context['cluster_title']}")
-    lines.append(f"Question: {context.get('stem', '')}")
+        sys_lines.append(f"Word cluster: {context['cluster_title']}")
+    sys_lines.append(f"Question: {context.get('stem', '')}")
 
     choices = context.get("choices", [])
     if choices:
         labels = ["A", "B", "C", "D"]
-        lines.append(
+        sys_lines.append(
             "Choices: "
             + ", ".join(f"{labels[i]}) {c}" for i, c in enumerate(choices))
         )
 
-    lines.append(f"Correct answer: {context.get('correct_word', '')}")
+    sys_lines.append(f"Correct answer: {context.get('correct_word', '')}")
 
     selected_idx = context.get("selected_index")
     was_correct = context.get("was_correct")
     if selected_idx is not None and choices:
         chosen = choices[selected_idx] if selected_idx < len(choices) else "?"
         if was_correct:
-            lines.append(f"Student chose: {chosen} (correct)")
+            sys_lines.append(f"Student chose: {chosen} (correct)")
         else:
-            lines.append(f"Student chose: {chosen} (wrong)")
+            sys_lines.append(f"Student chose: {chosen} (wrong)")
 
-    lines.append(f"Explanation: {context.get('explanation', '')}")
-    lines.append(f"Context sentence: {context.get('context_sentence', '')}")
+    sys_lines.append(f"Explanation: {context.get('explanation', '')}")
+    sys_lines.append(f"Context sentence: {context.get('context_sentence', '')}")
 
     details = context.get("choice_details", [])
     if details:
-        lines.append("")
-        lines.append("Word meanings in this cluster:")
+        sys_lines.append("")
+        sys_lines.append("Word meanings in this cluster:")
         for d in details:
             if d.get("meaning"):
                 line = f"- {d['word']}: {d['meaning']}"
                 if d.get("distinction"):
                     line += f" ({d['distinction']})"
-                lines.append(line)
+                sys_lines.append(line)
 
-    lines.append("")
-    lines.append("Guidelines:")
-    lines.append("- Be concise and educational. Focus on nuances between near-synonyms.")
-    lines.append("- Use concrete example sentences to illustrate.")
-    lines.append("- Write in flowing conversational prose — your output may be narrated aloud via TTS, so avoid tables, bullet points, and numbered lists.")
+    sys_lines.append("")
+    sys_lines.append("Guidelines:")
+    sys_lines.append("- Be concise and educational. Focus on nuances between near-synonyms.")
+    sys_lines.append("- Use concrete example sentences to illustrate.")
+    sys_lines.append("- Write in flowing conversational prose — your output will be narrated aloud via TTS, so never use tables, bullet points, or numbered lists.")
     if was_correct is False:
-        lines.append("- The student got this wrong. Address why their choice was incorrect and clarify the distinction they missed.")
+        sys_lines.append("- The student got this wrong. Address why their choice was incorrect and clarify the distinction they missed.")
     elif was_correct is True:
-        lines.append("- The student answered correctly. Skip praise and get straight to the substance.")
-    lines.append("")
+        sys_lines.append("- The student answered correctly. Skip praise and get straight to the substance.")
 
-    # Append conversation history
+    system = "\n".join(sys_lines)
+
+    # ── Conversation prompt ──
+    conv_lines: list[str] = []
     for msg in history:
         role = "Student" if msg["role"] == "user" else "Tutor"
-        lines.append(f"{role}: {msg['content']}")
-        lines.append("")
+        conv_lines.append(f"{role}: {msg['content']}")
+        conv_lines.append("")
 
-    lines.append(f"Student: {message}")
-    lines.append("")
-    lines.append("Tutor:")
+    conv_lines.append(f"Student: {message}")
+    conv_lines.append("")
+    conv_lines.append("Tutor:")
 
-    return "\n".join(lines)
+    return system, "\n".join(conv_lines)
 
 
 @app.post("/api/chat")
@@ -828,12 +835,12 @@ async def api_chat(request: Request):
     if not message:
         raise HTTPException(400, "No message provided")
 
-    prompt = _build_chat_prompt(context, history, message)
+    system, prompt = _build_chat_prompt(context, history, message)
     llm = _get_llm()
 
     async def stream():
         try:
-            async for token in llm.generate_stream(prompt, temperature=0.7):
+            async for token in llm.generate_stream(prompt, temperature=0.7, system=system):
                 yield f"data: {json.dumps({'token': token})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:

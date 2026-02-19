@@ -39,24 +39,30 @@ class OllamaProvider(LLMProvider):
         return response
 
     async def generate_stream(
-        self, prompt: str, temperature: float = 0.7
+        self, prompt: str, temperature: float = 0.7, system: str | None = None
     ) -> AsyncIterator[str]:
         """Stream tokens from Ollama, stripping <think>...</think> blocks."""
         log.info("── STREAM PROMPT (%s) ──\n%s", self.model, prompt)
+        if system:
+            log.info("── SYSTEM ──\n%s", system)
         t0 = time.monotonic()
         buf = ""
         in_think = False
+
+        body: dict = {
+            "model": self.model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if system:
+            body["system"] = system
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "stream": True,
-                },
+                json=body,
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

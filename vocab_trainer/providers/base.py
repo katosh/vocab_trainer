@@ -11,7 +11,7 @@ class LLMProvider(ABC):
         ...
 
     async def generate_stream(
-        self, prompt: str, temperature: float = 0.7
+        self, prompt: str, temperature: float = 0.7, system: str | None = None
     ) -> AsyncIterator[str]:
         """Stream response tokens. Default: yield full response at once."""
         result = await self.generate(prompt, temperature)
