@@ -436,3 +436,60 @@ class TestQuestionBuffer:
         data = resp.json()
         assert data["questions_ready"] == 0
         assert data["questions_archived"] == 1
+
+
+class TestLibraryAPI:
+    """Tests for the question library endpoints."""
+
+    def test_active_empty(self, test_app_with_data):
+        client, db, _ = test_app_with_data
+        resp = client.get("/api/questions/active")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_active_with_shown_question(self, test_app_with_data):
+        client, db, _ = test_app_with_data
+        q = db.get_session_questions(limit=1)[0]
+        db.record_question_shown(q["id"], correct=True)
+        db.upsert_review("terse", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+
+        resp = client.get("/api/questions/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["target_word"] == "terse"
+        assert "interval_days" in data[0]
+
+    def test_archived_empty(self, test_app_with_data):
+        client, db, _ = test_app_with_data
+        resp = client.get("/api/questions/archived")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_archived_with_data(self, test_app_with_data):
+        client, db, settings = test_app_with_data
+        settings.min_ready_questions = 0
+        q = db.get_session_questions(limit=1)[0]
+        db.record_question_shown(q["id"], correct=True)
+        db.set_question_archived(q["id"], True)
+
+        resp = client.get("/api/questions/archived")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["target_word"] == "terse"
+
+    def test_reset_due(self, test_app_with_data):
+        client, db, _ = test_app_with_data
+        db.upsert_review("terse", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
+        assert len(db.get_due_words()) == 0
+
+        resp = client.post("/api/questions/reset-due", json={"word": "terse"})
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert len(db.get_due_words()) == 1
+
+    def test_reset_due_missing_word(self, test_app):
+        client, _, _ = test_app
+        resp = client.post("/api/questions/reset-due", json={"word": ""})
+        assert resp.status_code == 400

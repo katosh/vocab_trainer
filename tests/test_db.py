@@ -157,6 +157,70 @@ class TestArchival:
         assert info["archived"] is False
 
 
+class TestLibraryQueries:
+    """Tests for get_active_questions, get_archived_questions, reset_word_due."""
+
+    def test_active_questions_empty_when_never_shown(self, populated_db, sample_question):
+        """Never-shown questions don't appear in active list."""
+        populated_db.save_question(sample_question)
+        assert len(populated_db.get_active_questions()) == 0
+
+    def test_active_questions_appear_after_shown(self, populated_db, sample_question):
+        """Shown, non-archived questions appear in active list with SRS info."""
+        populated_db.save_question(sample_question)
+        populated_db.record_question_shown("test-q-001", correct=True)
+        populated_db.upsert_review("terse", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+
+        active = populated_db.get_active_questions()
+        assert len(active) == 1
+        assert active[0]["target_word"] == "terse"
+        assert active[0]["times_shown"] == 1
+        assert active[0]["interval_days"] == 1.0
+        assert active[0]["next_review"] is not None
+
+    def test_active_questions_exclude_archived(self, populated_db, sample_question):
+        """Archived questions don't appear in active list."""
+        populated_db.save_question(sample_question)
+        populated_db.record_question_shown("test-q-001", correct=True)
+        populated_db.set_question_archived("test-q-001", True)
+        assert len(populated_db.get_active_questions()) == 0
+
+    def test_archived_questions_empty_initially(self, populated_db, sample_question):
+        populated_db.save_question(sample_question)
+        assert len(populated_db.get_archived_questions()) == 0
+
+    def test_archived_questions_appear(self, populated_db, sample_question):
+        populated_db.save_question(sample_question)
+        populated_db.record_question_shown("test-q-001", correct=True)
+        populated_db.set_question_archived("test-q-001", True)
+        populated_db.upsert_review("terse", 2.5, 25.0, 5, "2026-03-15T00:00:00+00:00", True)
+
+        archived = populated_db.get_archived_questions()
+        assert len(archived) == 1
+        assert archived[0]["target_word"] == "terse"
+
+    def test_reset_word_due(self, populated_db, sample_question):
+        """reset_word_due sets next_review to now and interval to 1."""
+        populated_db.save_question(sample_question)
+        # Set a future review
+        populated_db.upsert_review("terse", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
+        assert len(populated_db.get_due_words()) == 0
+
+        populated_db.reset_word_due("terse")
+        r = populated_db.get_review("terse")
+        assert r["interval_days"] == 1.0
+        assert r["repetitions"] == 0
+        # Should now be due
+        assert len(populated_db.get_due_words()) == 1
+
+    def test_reset_word_due_case_insensitive(self, populated_db, sample_question):
+        populated_db.save_question(sample_question)
+        populated_db.upsert_review("terse", 2.5, 10.0, 3, "2099-01-01T00:00:00+00:00", True)
+        populated_db.reset_word_due("TERSE")
+        r = populated_db.get_review("terse")
+        assert r["interval_days"] == 1.0
+
+
 class TestQuestionPools:
     """Tests for review/new question pool queries."""
 
