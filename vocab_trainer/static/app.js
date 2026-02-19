@@ -421,9 +421,11 @@ async function submitAnswer(selectedIndex, questionData) {
                 showSummary(result.summary);
             } else {
                 showQuizState('loading');
+                document.getElementById('quiz-loading-text').textContent = 'Generating question...';
                 const nextQ = await api('/api/session/next', 'POST', {
                     session_id: currentSessionId,
                 });
+                document.getElementById('quiz-loading-text').textContent = 'Loading question...';
                 showQuestion(nextQ);
             }
         };

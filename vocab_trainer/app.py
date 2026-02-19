@@ -112,17 +112,37 @@ _pregen_log = logging.getLogger("vocab_trainer.pregen")
 
 
 async def _pregenerate_session_questions(session_id: int, pending_indices: list[int]):
-    """Generate pending session questions in the background."""
+    """Generate pending session questions in the background.
+
+    Each iteration picks the pending question closest to (but >= )
+    the user's current_index, so the next question the user will
+    need is always generated first.
+    """
     llm = _get_llm()
     db = get_db()
-    for idx in pending_indices:
+    remaining = set(pending_indices)
+
+    while remaining:
         session = _active_sessions.get(session_id)
         if session is None:
             _pregen_log.info("Session %d gone, stopping pre-generation", session_id)
             return
+
+        # Pick the pending index closest to (>= ) current playback position
+        current = session["current_index"]
+        ahead = sorted(i for i in remaining if i >= current)
+        behind = sorted(i for i in remaining if i < current)
+        order = ahead + behind  # prioritize ahead, then wrap around
+        if not order:
+            break
+
+        idx = order[0]
+        remaining.discard(idx)
+
         q_data = session["questions"][idx]
         if "pending_cluster" not in q_data:
             continue  # Already generated (e.g. by _get_next_question)
+
         # Mark as in-flight so _get_next_question won't duplicate the work
         cluster, word_info = q_data.pop("pending_cluster"), q_data.pop("pending_word")
         q_data["generating"] = True
@@ -368,9 +388,6 @@ async def api_session_start():
                 questions_data.append(q)
                 seen_words.add(q["target_word"].lower())
 
-    # Shuffle pre-generated questions for variety (pending ones go after)
-    random.shuffle(questions_data)
-
     # 4. Fill remaining slots with pending generation (respects active-word cap)
     remaining_slots = s.session_size - len(questions_data)
     new_word_room = max(0, room - new_count)
@@ -400,6 +417,11 @@ async def api_session_start():
     if not questions_data:
         return {"error": "No questions available. Import vocabulary and generate questions first.", "session_id": None}
 
+    # Shuffle ALL questions (banked + pending) so pending ones are
+    # interleaved rather than clumped at the end — gives background
+    # generation more time before the user reaches each pending slot.
+    random.shuffle(questions_data)
+
     # Store session state
     _active_sessions[session_id] = {
         "questions": questions_data,
@@ -410,7 +432,8 @@ async def api_session_start():
         "new_count": new_count,
     }
 
-    # Pre-generate pending questions in the background
+    # Pre-generate pending questions in the background,
+    # prioritizing those closest to the front of the queue.
     pending = [i for i, q in enumerate(questions_data) if "pending_cluster" in q]
     if pending:
         asyncio.create_task(_pregenerate_session_questions(session_id, pending))
