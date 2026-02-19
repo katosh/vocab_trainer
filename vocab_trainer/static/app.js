@@ -42,7 +42,7 @@ async function refreshStats() {
         const stats = await api('/api/stats');
         document.getElementById('stat-total').textContent = stats.total_words;
         document.getElementById('stat-reviewed').textContent = stats.words_reviewed;
-        document.getElementById('stat-due').textContent = stats.words_due;
+        document.getElementById('stat-clusters').textContent = stats.total_clusters;
         document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
         document.getElementById('stat-sessions').textContent = stats.total_sessions;
         document.getElementById('stat-active').textContent =
