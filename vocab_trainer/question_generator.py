@@ -1,7 +1,6 @@
 """Orchestrate LLM to generate quiz questions from vocabulary clusters."""
 from __future__ import annotations
 
-import asyncio
 import json
 import random
 import re
@@ -174,20 +173,13 @@ async def generate_batch(
     db: Database,
     count: int = 10,
     target_words: list[str] | None = None,
-    gate: asyncio.Event | None = None,
 ) -> list[Question]:
-    """Generate a batch of questions and save to database.
-
-    If *gate* is provided, waits on it between iterations so that
-    higher-priority LLM work (e.g. chat) can pre-empt this batch.
-    """
+    """Generate a batch of questions and save to database."""
     questions: list[Question] = []
 
     if target_words:
         # Generate questions for specific words
         for word in target_words:
-            if gate:
-                await gate.wait()
             # Find the cluster containing this word
             all_clusters = db.get_all_clusters()
             for cl in all_clusters:
@@ -205,8 +197,6 @@ async def generate_batch(
     else:
         # Generate random questions
         for i in range(count):
-            if gate:
-                await gate.wait()
             q = await generate_question(llm, db)
             if q:
                 db.save_question(q)

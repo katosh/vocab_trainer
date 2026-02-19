@@ -72,10 +72,8 @@ def _get_tts():
 _bg_generating = False
 _bg_log = logging.getLogger("vocab_trainer.bg")
 
-# Gate that background LLM tasks wait on between iterations.
-# Cleared while a chat stream is active so the chat gets GPU priority.
-_llm_gate = asyncio.Event()
-_llm_gate.set()  # open by default
+# Background LLM tasks — tracked so chat can cancel them for GPU priority.
+_bg_tasks: set[asyncio.Task] = set()
 
 
 async def _ensure_question_buffer():
@@ -92,21 +90,24 @@ async def _ensure_question_buffer():
         return
     need = s.min_ready_questions - ready
     _bg_generating = True
-    asyncio.create_task(_generate_in_background(need))
+    task = asyncio.create_task(_generate_in_background(need))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 async def _generate_in_background(count: int):
     global _bg_generating
     try:
         _bg_log.info("Background generation: creating %d questions", count)
-        await _llm_gate.wait()  # yield to chat if active
         db = get_db()
         llm = _get_llm()
-        questions = await generate_batch(llm, db, count=count, gate=_llm_gate)
+        questions = await generate_batch(llm, db, count=count)
         _bg_log.info(
             "Background generation: created %d questions, bank now %d ready",
             len(questions), db.get_ready_question_count(),
         )
+    except asyncio.CancelledError:
+        _bg_log.info("Background generation cancelled (chat priority)")
     except Exception as e:
         _bg_log.warning("Background generation failed: %s", e)
     finally:
@@ -124,52 +125,68 @@ async def _pregenerate_session_questions(session_id: int, pending_indices: list[
     pending_indices is already sorted by session position, so the
     next question the user will need is always generated first.
     Only this task calls the LLM — _get_next_question just waits.
+    Cancelled when a chat request needs GPU priority; the remaining
+    indices are re-queued on resume.
     """
     llm = _get_llm()
     db = get_db()
 
-    for idx in pending_indices:
-        session = _active_sessions.get(session_id)
-        if session is None:
-            _pregen_log.info("Session %d gone, stopping pre-generation", session_id)
-            return
+    try:
+        for idx in pending_indices:
+            session = _active_sessions.get(session_id)
+            if session is None:
+                _pregen_log.info("Session %d gone, stopping pre-generation", session_id)
+                return
 
-        q_data = session["questions"][idx]
-        if "pending_cluster" not in q_data:
-            continue  # Already handled
+            q_data = session["questions"][idx]
+            if "pending_cluster" not in q_data:
+                continue  # Already handled
 
-        cluster, word_info = q_data.pop("pending_cluster"), q_data.pop("pending_word")
-        q_data["generating"] = True
-        try:
-            await _llm_gate.wait()  # yield to chat if active
-            q = await generate_question(
-                llm, db,
-                cluster=cluster,
-                target_word_info=word_info,
-            )
-            if q:
-                db.save_question(q)
-                session["questions"][idx] = {
-                    "id": q.id,
-                    "question_type": q.question_type,
-                    "stem": q.stem,
-                    "choices_json": json.dumps(q.choices),
-                    "correct_index": q.correct_index,
-                    "correct_word": q.correct_word,
-                    "explanation": q.explanation,
-                    "context_sentence": q.context_sentence,
-                    "cluster_title": q.cluster_title,
-                }
-                _pregen_log.info("Pre-generated question %d/%d for session %d",
-                                 idx + 1, len(session["questions"]), session_id)
-            else:
+            cluster, word_info = q_data.pop("pending_cluster"), q_data.pop("pending_word")
+            q_data["generating"] = True
+            try:
+                q = await generate_question(
+                    llm, db,
+                    cluster=cluster,
+                    target_word_info=word_info,
+                )
+                if q:
+                    db.save_question(q)
+                    session["questions"][idx] = {
+                        "id": q.id,
+                        "question_type": q.question_type,
+                        "stem": q.stem,
+                        "choices_json": json.dumps(q.choices),
+                        "correct_index": q.correct_index,
+                        "correct_word": q.correct_word,
+                        "explanation": q.explanation,
+                        "context_sentence": q.context_sentence,
+                        "cluster_title": q.cluster_title,
+                    }
+                    _pregen_log.info("Pre-generated question %d/%d for session %d",
+                                     idx + 1, len(session["questions"]), session_id)
+                else:
+                    q_data.pop("generating", None)
+                    q_data["generation_failed"] = True
+                    _pregen_log.warning("Pre-generation returned None for index %d", idx)
+            except asyncio.CancelledError:
+                # Put the pending data back so it can be retried
+                q_data.pop("generating", None)
+                q_data["pending_cluster"] = cluster
+                q_data["pending_word"] = word_info
+                raise
+            except Exception as e:
+                _pregen_log.warning("Pre-generation failed for index %d: %s", idx, e)
                 q_data.pop("generating", None)
                 q_data["generation_failed"] = True
-                _pregen_log.warning("Pre-generation returned None for index %d", idx)
-        except Exception as e:
-            _pregen_log.warning("Pre-generation failed for index %d: %s", idx, e)
-            q_data.pop("generating", None)
-            q_data["generation_failed"] = True
+    except asyncio.CancelledError:
+        _pregen_log.info("Session %d pre-generation cancelled (chat priority)", session_id)
+        # Re-queue remaining pending indices after chat completes
+        remaining = [i for i in pending_indices if "pending_cluster" in
+                     (_active_sessions.get(session_id, {}).get("questions", [{}] * (i + 1))[i])]
+        if remaining and _active_sessions.get(session_id):
+            _pregen_log.info("Will resume %d pending questions after chat", len(remaining))
+            _active_sessions[session_id]["_resume_indices"] = remaining
 
 
 def _auto_import_if_changed(db: Database, settings: Settings) -> None:
@@ -431,7 +448,9 @@ async def api_session_start():
     # indices are in session order so nearest-needed is generated first.
     pending_indices = [i for i, q in enumerate(final) if "pending_cluster" in q]
     if pending_indices:
-        asyncio.create_task(_pregenerate_session_questions(session_id, pending_indices))
+        task = asyncio.create_task(_pregenerate_session_questions(session_id, pending_indices))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
     # Return first question
     return await _get_next_question(session_id)
@@ -831,8 +850,17 @@ async def api_chat(request: Request):
     system, prompt = _build_chat_prompt(context, history, message)
     llm = _get_llm()
 
+    # Cancel in-flight background LLM tasks to free the GPU immediately
+    cancelled_tasks = set(_bg_tasks)
+    for t in cancelled_tasks:
+        t.cancel()
+    for t in cancelled_tasks:
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
     async def stream():
-        _llm_gate.clear()  # pause background LLM work
         try:
             async for token in llm.generate_stream(prompt, temperature=0.7, system=system):
                 yield f"data: {json.dumps({'token': token})}\n\n"
@@ -840,7 +868,16 @@ async def api_chat(request: Request):
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         finally:
-            _llm_gate.set()  # resume background LLM work
+            # Resume pre-generation for any active sessions
+            for sid, session in _active_sessions.items():
+                resume = session.pop("_resume_indices", None)
+                if resume:
+                    task = asyncio.create_task(
+                        _pregenerate_session_questions(sid, resume))
+                    _bg_tasks.add(task)
+                    task.add_done_callback(_bg_tasks.discard)
+            # Resume background buffer generation
+            await _ensure_question_buffer()
 
     return StreamingResponse(
         stream(),
