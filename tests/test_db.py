@@ -118,6 +118,101 @@ class TestQuestions:
         assert len(unused) == 0
 
 
+class TestArchival:
+    """Tests for SRS-interval-based archival."""
+
+    def test_archive_when_interval_reached(self, populated_db, sample_question):
+        """Word archives when SRS interval >= threshold after correct answer."""
+        populated_db.save_question(sample_question)
+        # Simulate a word that has been reviewed many times (interval 25 days)
+        populated_db.upsert_review(
+            "terse", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True
+        )
+        info = populated_db.record_question_shown("test-q-001", correct=True, archive_interval_days=21)
+        assert info["archived"] is True
+        assert "Mastered" in info["reason"]
+
+    def test_no_archive_below_threshold(self, populated_db, sample_question):
+        """Word with short interval stays in rotation."""
+        populated_db.save_question(sample_question)
+        populated_db.upsert_review(
+            "terse", 2.5, 6.0, 2, "2020-01-01T00:00:00+00:00", True
+        )
+        info = populated_db.record_question_shown("test-q-001", correct=True, archive_interval_days=21)
+        assert info["archived"] is False
+
+    def test_no_archive_on_wrong_even_high_interval(self, populated_db, sample_question):
+        """Wrong answer never archives, even with high interval."""
+        populated_db.save_question(sample_question)
+        populated_db.upsert_review(
+            "terse", 2.6, 30.0, 5, "2020-01-01T00:00:00+00:00", True
+        )
+        info = populated_db.record_question_shown("test-q-001", correct=False, archive_interval_days=21)
+        assert info["archived"] is False
+
+    def test_no_archive_first_correct(self, populated_db, sample_question):
+        """First correct answer does NOT archive (no review data yet)."""
+        populated_db.save_question(sample_question)
+        info = populated_db.record_question_shown("test-q-001", correct=True)
+        assert info["archived"] is False
+
+
+class TestQuestionPools:
+    """Tests for review/new question pool queries."""
+
+    def test_get_review_questions_due(self, populated_db, sample_question):
+        """Questions for due words with times_shown > 0 appear in review pool."""
+        populated_db.save_question(sample_question)
+        # Show the question once
+        populated_db.record_question_shown("test-q-001", correct=True)
+        # Set review as due
+        populated_db.upsert_review(
+            "terse", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True
+        )
+        review_qs = populated_db.get_review_questions(limit=10)
+        assert len(review_qs) == 1
+        assert review_qs[0]["id"] == "test-q-001"
+
+    def test_get_review_questions_not_due(self, populated_db, sample_question):
+        """Questions for words not yet due don't appear in review pool."""
+        populated_db.save_question(sample_question)
+        populated_db.record_question_shown("test-q-001", correct=True)
+        # Set review far in the future
+        populated_db.upsert_review(
+            "terse", 2.5, 1.0, 1, "2099-01-01T00:00:00+00:00", True
+        )
+        review_qs = populated_db.get_review_questions(limit=10)
+        assert len(review_qs) == 0
+
+    def test_get_new_questions(self, populated_db, sample_question):
+        """Never-shown questions appear in new pool."""
+        populated_db.save_question(sample_question)
+        new_qs = populated_db.get_new_questions(limit=10)
+        assert len(new_qs) == 1
+        assert new_qs[0]["id"] == "test-q-001"
+
+    def test_get_new_questions_excludes_shown(self, populated_db, sample_question):
+        """Shown questions don't appear in new pool."""
+        populated_db.save_question(sample_question)
+        populated_db.record_question_shown("test-q-001", correct=True)
+        new_qs = populated_db.get_new_questions(limit=10)
+        assert len(new_qs) == 0
+
+    def test_get_active_word_count(self, populated_db, sample_question):
+        """Active word count is 0 before showing, 1 after."""
+        populated_db.save_question(sample_question)
+        assert populated_db.get_active_word_count() == 0
+        populated_db.record_question_shown("test-q-001", correct=True)
+        assert populated_db.get_active_word_count() == 1
+
+    def test_ready_count_only_new(self, populated_db, sample_question):
+        """Ready count only includes never-shown questions."""
+        populated_db.save_question(sample_question)
+        assert populated_db.get_ready_question_count() == 1
+        populated_db.record_question_shown("test-q-001", correct=True)
+        assert populated_db.get_ready_question_count() == 0
+
+
 class TestReviews:
     def test_new_word_no_review(self, populated_db):
         r = populated_db.get_review("perspicacious")

@@ -224,9 +224,9 @@ class Database:
         return row[0]
 
     def get_ready_question_count(self) -> int:
-        """Non-archived questions available for sessions."""
+        """Never-shown, non-archived questions (new material buffer)."""
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM questions WHERE archived = 0"
+            "SELECT COUNT(*) FROM questions WHERE archived = 0 AND times_shown = 0"
         ).fetchone()
         return row[0]
 
@@ -280,8 +280,48 @@ class Database:
         """, (now, now, limit)).fetchall()
         return [dict(r) for r in rows]
 
-    def record_question_shown(self, question_id: str, correct: bool) -> dict:
-        """Record answer, update streak, auto-archive if mastered.
+    def get_review_questions(self, limit: int = 20) -> list[dict]:
+        """Non-archived questions for words already in rotation and due for review.
+
+        Priority: struggling words first, then by staleness.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        rows = self.conn.execute("""
+            SELECT q.*
+            FROM questions q
+            JOIN reviews r ON q.target_word = r.word
+            WHERE q.archived = 0
+              AND q.times_shown > 0
+              AND r.next_review <= ?
+            ORDER BY
+                CASE WHEN r.total_incorrect > r.total_correct THEN 0 ELSE 1 END ASC,
+                r.next_review ASC
+            LIMIT ?
+        """, (now, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_new_questions(self, limit: int = 10) -> list[dict]:
+        """Non-archived questions that have never been shown (new material)."""
+        rows = self.conn.execute(
+            "SELECT * FROM questions WHERE archived = 0 AND times_shown = 0 "
+            "ORDER BY RANDOM() LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_active_word_count(self) -> int:
+        """Count distinct words currently in rotation (shown but not archived)."""
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT target_word) FROM questions "
+            "WHERE archived = 0 AND times_shown > 0"
+        ).fetchone()
+        return row[0]
+
+    def record_question_shown(self, question_id: str, correct: bool, archive_interval_days: int = 21) -> dict:
+        """Record answer and auto-archive when SRS interval reaches threshold.
+
+        Archives when the word's review interval_days >= archive_interval_days
+        after a correct answer (meaning sustained mastery over multiple reviews).
 
         Returns {"archived": bool, "reason": str, "question_id": str}.
         """
@@ -293,33 +333,27 @@ class Database:
 
         q = dict(q)
         if correct:
-            new_consec = q.get("consecutive_correct", 0) + 1
             self.conn.execute(
                 "UPDATE questions SET times_shown = times_shown + 1, "
-                "times_correct = times_correct + 1, consecutive_correct = ? "
-                "WHERE id = ?",
-                (new_consec, question_id),
+                "times_correct = times_correct + 1 WHERE id = ?",
+                (question_id,),
             )
         else:
-            new_consec = 0
             self.conn.execute(
-                "UPDATE questions SET times_shown = times_shown + 1, "
-                "consecutive_correct = 0 WHERE id = ?",
+                "UPDATE questions SET times_shown = times_shown + 1 WHERE id = ?",
                 (question_id,),
             )
 
-        # Archive policy:
-        #   - First encounter + correct → mastered immediately
-        #   - Two consecutive correct (after a prior wrong) → mastered
+        # Archive policy: archive when SRS interval proves sustained mastery
         should_archive = False
         reason = ""
-        if correct:
-            if q["times_shown"] == 0:
-                should_archive = True
-                reason = "Nailed it first try"
-            elif new_consec >= 2:
-                should_archive = True
-                reason = "Correct twice in a row"
+        interval_days = 0.0
+        review = self.get_review(q["target_word"])
+        if review:
+            interval_days = review["interval_days"]
+        if correct and interval_days >= archive_interval_days:
+            should_archive = True
+            reason = f"Mastered (interval {interval_days:.0f} days)"
 
         if should_archive:
             self.conn.execute(
@@ -332,6 +366,8 @@ class Database:
             "archived": should_archive,
             "reason": reason,
             "question_id": question_id,
+            "interval_days": round(interval_days, 1),
+            "archive_threshold": archive_interval_days,
         }
 
     def set_question_archived(self, question_id: str, archived: bool) -> None:
@@ -339,12 +375,6 @@ class Database:
             "UPDATE questions SET archived = ? WHERE id = ?",
             (1 if archived else 0, question_id),
         )
-        if not archived:
-            # Reset streak when un-archiving so it can be earned again
-            self.conn.execute(
-                "UPDATE questions SET consecutive_correct = 0 WHERE id = ?",
-                (question_id,),
-            )
         self.conn.commit()
 
     # ── Reviews (SRS) ─────────────────────────────────────────────────────
@@ -494,6 +524,7 @@ class Database:
         bank = self.get_question_bank_size()
         ready = self.get_ready_question_count()
         archived = self.get_archived_question_count()
+        active = self.get_active_word_count()
 
         # Count accuracy from the reviews table (always recorded, unlike sessions)
         review_stats = self.conn.execute(
@@ -518,6 +549,8 @@ class Database:
             "question_bank_size": bank,
             "questions_ready": ready,
             "questions_archived": archived,
+            "active_words": active,
+            "new_questions": ready,
             "total_sessions": sessions["cnt"],
             "total_questions_answered": total_answered,
             "total_correct": total_correct,

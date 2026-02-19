@@ -41,8 +41,8 @@
                     <div class="stat-label">Sessions</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value" id="stat-bank">—</div>
-                    <div class="stat-label">Ready / Archived</div>
+                    <div class="stat-value" id="stat-active">—</div>
+                    <div class="stat-label">Active Words</div>
                 </div>
             </div>
 
@@ -76,7 +76,10 @@
                 <div class="progress-text" id="progress-text"></div>
 
                 <div class="question-card">
-                    <div class="question-type" id="question-type"></div>
+                    <div class="question-meta">
+                        <div class="question-type" id="question-type"></div>
+                        <div class="question-badge" id="question-badge"></div>
+                    </div>
                     <div class="cluster-title" id="cluster-title"></div>
                     <div class="question-stem" id="question-stem"></div>
 
@@ -135,6 +138,7 @@
                         <span class="summary-label">Accuracy</span>
                     </div>
                 </div>
+                <div class="summary-breakdown hidden" id="summary-breakdown"></div>
                 <button id="btn-new-session" class="btn-primary btn-large">New Session</button>
                 <button id="btn-back-dashboard" class="btn-secondary">Back to Dashboard</button>
             </div>
@@ -182,6 +186,18 @@
                     <label for="set-min-ready">Min Ready Questions (auto-generate buffer)</label>
                     <input id="set-min-ready" type="range" min="0" max="20" value="3">
                     <span id="set-min-ready-val">3</span>
+                </div>
+                <div class="form-group">
+                    <label for="set-max-active">Max Active Words</label>
+                    <input id="set-max-active" type="range" min="5" max="100" value="20">
+                    <span id="set-max-active-val">20</span>
+                    <small class="form-hint">Stop introducing new words when this many are in rotation</small>
+                </div>
+                <div class="form-group">
+                    <label for="set-archive-interval">Archive Interval (days)</label>
+                    <input id="set-archive-interval" type="range" min="7" max="90" value="21">
+                    <span id="set-archive-interval-val">21</span>
+                    <small class="form-hint">Words graduate when their SRS interval reaches this many days</small>
                 </div>
                 <button type="submit" class="btn-primary">Save Settings</button>
                 <div id="settings-message" class="message hidden"></div>

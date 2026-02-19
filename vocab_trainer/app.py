@@ -148,7 +148,9 @@ async def script():
 
 @app.get("/api/stats")
 async def api_stats():
-    return get_db().get_stats()
+    stats = get_db().get_stats()
+    stats["max_active_words"] = get_settings().max_active_words
+    return stats
 
 
 # ── API: Import ───────────────────────────────────────────────────────────
@@ -208,19 +210,37 @@ async def api_session_start():
 
     session_id = db.start_session()
 
-    # 1. Draw from the question bank (SRS-prioritized, non-archived)
-    banked = db.get_session_questions(limit=s.session_size)
-    questions_data = list(banked)
+    # Two-pool composition (like Anki):
+    # 1. Fill with due review questions
+    review_qs = db.get_review_questions(limit=s.session_size)
+    questions_data = list(review_qs)
+    review_count = len(questions_data)
     seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
 
-    # 2. Fill remaining slots with on-the-fly generation targets
-    remaining = s.session_size - len(questions_data)
-    if remaining > 0:
-        targets = select_session_words(db, remaining, s.new_words_per_session)
+    # 2. Fill remaining slots with new questions, respecting workload cap
+    new_count = 0
+    remaining_slots = s.session_size - len(questions_data)
+    if remaining_slots > 0:
+        active_count = db.get_active_word_count()
+        room = max(0, s.max_active_words - active_count)
+        new_limit = min(room, s.new_words_per_session, remaining_slots)
+        if new_limit > 0:
+            new_qs = db.get_new_questions(limit=new_limit)
+            for q in new_qs:
+                if q["target_word"].lower() not in seen_words:
+                    questions_data.append(q)
+                    seen_words.add(q["target_word"].lower())
+                    new_count += 1
+
+    # Shuffle for variety
+    random.shuffle(questions_data)
+
+    # 3. Fall back to on-the-fly generation only if both pools are empty
+    if not questions_data:
+        targets = select_session_words(db, s.session_size, s.new_words_per_session)
         for word in targets:
             if word.lower() in seen_words:
                 continue
-            # Find the word's cluster for on-the-fly generation
             all_clusters = db.get_all_clusters()
             for cl in all_clusters:
                 cw = db.get_cluster_words(cl["id"])
@@ -244,6 +264,8 @@ async def api_session_start():
         "current_index": 0,
         "total": 0,
         "correct": 0,
+        "review_count": review_count,
+        "new_count": new_count,
     }
 
     # Return first question
@@ -270,15 +292,18 @@ async def api_session_answer(request: Request):
     if correct:
         session["correct"] += 1
 
-    # Record in DB + archive decision
+    # SRS update first (so archive check sees updated interval)
     db = get_db()
-    archive_info = {"archived": False, "reason": "", "question_id": ""}
-    if current_q.get("id"):
-        archive_info = db.record_question_shown(current_q["id"], correct)
-
-    # SRS update
+    s = get_settings()
     quality = quality_from_answer(correct, time_seconds)
     record_review(db, current_q["correct_word"], quality)
+
+    # Record in DB + archive decision
+    archive_info = {"archived": False, "reason": "", "question_id": ""}
+    if current_q.get("id"):
+        archive_info = db.record_question_shown(
+            current_q["id"], correct, s.archive_interval_days
+        )
 
     # Generate TTS for the context sentence
     audio_hash = None
@@ -321,6 +346,8 @@ async def api_session_answer(request: Request):
             "total": session["total"],
             "correct": session["correct"],
             "accuracy": round(session["correct"] / max(session["total"], 1) * 100, 1),
+            "review_count": session.get("review_count", 0),
+            "new_count": session.get("new_count", 0),
         }
         del _active_sessions[session_id]
     else:
@@ -420,6 +447,7 @@ async def _get_next_question(session_id: int) -> dict:
                 }
                 choice_details.append(detail)
 
+    times_shown = q_data.get("times_shown", 0) or 0
     question = {
         "session_id": session_id,
         "question_type": q_data.get("question_type", "fill_blank"),
@@ -432,6 +460,7 @@ async def _get_next_question(session_id: int) -> dict:
         "context_sentence": q_data.get("context_sentence", ""),
         "cluster_title": cluster_title,
         "id": q_data.get("id", ""),
+        "is_new": times_shown == 0,
         "progress": {
             "current": idx + 1,
             "total": len(session["questions"]),

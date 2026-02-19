@@ -260,7 +260,7 @@ class TestFullSessionFlow:
 
 
 class TestQuestionBuffer:
-    """Tests for the background question buffer mechanism."""
+    """Tests for the background question buffer and SRS-based archival."""
 
     def _make_question(self, word="terse", qid=None):
         return Question(
@@ -276,15 +276,14 @@ class TestQuestionBuffer:
             llm_provider="test",
         )
 
-    def test_archive_on_first_correct(self, test_app_with_data):
-        """Question answered correctly on first encounter gets archived."""
+    def test_no_archive_on_first_correct(self, test_app_with_data):
+        """First correct answer does NOT archive (SRS interval too low)."""
         client, db, _ = test_app_with_data
         q = db.get_session_questions(limit=1)[0]
         assert q["archived"] == 0
 
         info = db.record_question_shown(q["id"], correct=True)
-        assert info["archived"] is True
-        assert "first try" in info["reason"].lower()
+        assert info["archived"] is False
 
     def test_no_archive_on_first_wrong(self, test_app_with_data):
         """Wrong answer does not archive."""
@@ -293,18 +292,6 @@ class TestQuestionBuffer:
 
         info = db.record_question_shown(q["id"], correct=False)
         assert info["archived"] is False
-
-    def test_archive_after_two_consecutive_correct(self, test_app_with_data):
-        """After a wrong answer, need 2 consecutive correct to archive."""
-        client, db, _ = test_app_with_data
-        q = db.get_session_questions(limit=1)[0]
-
-        db.record_question_shown(q["id"], correct=False)  # wrong
-        info = db.record_question_shown(q["id"], correct=True)  # 1st correct
-        assert info["archived"] is False
-        info = db.record_question_shown(q["id"], correct=True)  # 2nd correct
-        assert info["archived"] is True
-        assert "twice" in info["reason"].lower()
 
     def test_archived_excluded_from_session(self, test_app_with_data):
         """Archived questions are not returned by get_session_questions."""
@@ -315,15 +302,18 @@ class TestQuestionBuffer:
         remaining = db.get_session_questions(limit=10)
         assert all(r["id"] != q["id"] for r in remaining)
 
-    def test_unarchive_resets_streak(self, test_app_with_data):
-        """Un-archiving resets consecutive_correct so mastery must be re-earned."""
+    def test_unarchive_keeps_srs_data(self, test_app_with_data):
+        """Un-archiving preserves SRS data; word doesn't re-archive without high interval."""
         client, db, _ = test_app_with_data
         q = db.get_session_questions(limit=1)[0]
 
-        db.record_question_shown(q["id"], correct=True)  # archived
+        # Set a high interval and archive
+        db.upsert_review("terse", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
+        db.record_question_shown(q["id"], correct=True)  # archives (interval >= 21)
         db.set_question_archived(q["id"], False)  # un-archive
 
-        # One correct should NOT re-archive (streak was reset)
+        # Reset review interval low — should NOT re-archive
+        db.upsert_review("terse", 2.5, 6.0, 2, "2020-01-01T00:00:00+00:00", True)
         info = db.record_question_shown(q["id"], correct=True)
         assert info["archived"] is False
 
@@ -337,6 +327,8 @@ class TestQuestionBuffer:
         resp = client.post(f"/api/question/{q['id']}/archive", json={"archived": True})
         assert resp.status_code == 200
         assert resp.json()["archived"] is True
+        # get_ready_question_count now counts times_shown=0 only; question was never shown
+        # so archiving it removes it from the new pool
         assert db.get_ready_question_count() == 0
 
         # Un-archive via API
@@ -346,9 +338,13 @@ class TestQuestionBuffer:
         assert db.get_ready_question_count() == 1
 
     def test_answer_response_includes_archive_info(self, test_app_with_data):
-        """The answer API response includes archive recommendation."""
+        """The answer API response includes archive info with SRS-based archival."""
         client, db, settings = test_app_with_data
         settings.session_size = 1
+        settings.archive_interval_days = 21
+
+        # Set up a review with interval >= 21 so it will archive on correct
+        db.upsert_review("terse", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
 
         session_id = db.start_session()
         q = db.get_session_questions(limit=1)[0]
@@ -382,9 +378,8 @@ class TestQuestionBuffer:
         client, db, settings = test_app_with_data
         settings.min_ready_questions = 3
 
-        # We have 1 question, need 3 → should trigger
+        # We have 1 question (never shown), need 3 → should trigger
         generated = []
-        original_generate_batch = app_module.generate_batch
 
         async def mock_generate_batch(llm, db, count=10, **kw):
             for i in range(count):
@@ -409,7 +404,7 @@ class TestQuestionBuffer:
         client, db, settings = test_app_with_data
         settings.min_ready_questions = 1
 
-        # We have 1 question, need 1 → should NOT trigger
+        # We have 1 question (never shown), need 1 → should NOT trigger
         with patch("vocab_trainer.app.generate_batch") as mock_gen:
             asyncio.get_event_loop().run_until_complete(
                 app_module._ensure_question_buffer()
@@ -417,13 +412,21 @@ class TestQuestionBuffer:
             asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.1))
             mock_gen.assert_not_called()
 
-    def test_stats_include_ready_and_archived(self, test_app_with_data):
-        """Stats API returns both ready and archived question counts."""
+    def test_stats_include_active_words(self, test_app_with_data):
+        """Stats API returns active_words count."""
         client, db, _ = test_app_with_data
         resp = client.get("/api/stats")
         data = resp.json()
-        assert "questions_ready" in data
-        assert "questions_archived" in data
+        assert "active_words" in data
+        assert "new_questions" in data
+        assert data["active_words"] == 0
+        assert data["new_questions"] == 1  # 1 never-shown question
+
+    def test_stats_ready_and_archived(self, test_app_with_data):
+        """Stats API returns ready and archived question counts."""
+        client, db, _ = test_app_with_data
+        resp = client.get("/api/stats")
+        data = resp.json()
         assert data["questions_ready"] == 1
         assert data["questions_archived"] == 0
 

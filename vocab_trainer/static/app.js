@@ -43,8 +43,8 @@ async function refreshStats() {
         document.getElementById('stat-due').textContent = stats.words_due;
         document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
         document.getElementById('stat-sessions').textContent = stats.total_sessions;
-        document.getElementById('stat-bank').textContent =
-            stats.questions_ready + ' / ' + stats.questions_archived;
+        document.getElementById('stat-active').textContent =
+            stats.active_words + ' / ' + stats.max_active_words;
     } catch (e) {
         console.error('Failed to load stats:', e);
     }
@@ -158,14 +158,22 @@ function showQuestion(data) {
         `Question ${progress.current} of ${progress.total}` +
         (progress.answered > 0 ? ` | ${progress.correct}/${progress.answered} correct` : '');
 
-    // Question type
+    // Question type + New/Review badge
     const typeLabels = {
         fill_blank: 'Fill in the Blank',
         best_fit: 'Best Fit',
         distinction: 'Distinction',
     };
-    document.getElementById('question-type').textContent =
-        typeLabels[data.question_type] || data.question_type;
+    const typeEl = document.getElementById('question-type');
+    typeEl.textContent = typeLabels[data.question_type] || data.question_type;
+    const badge = document.getElementById('question-badge');
+    if (data.is_new) {
+        badge.textContent = 'New';
+        badge.className = 'question-badge new';
+    } else {
+        badge.textContent = 'Review';
+        badge.className = 'question-badge review';
+    }
 
     // Cluster
     document.getElementById('cluster-title').textContent =
@@ -265,7 +273,12 @@ async function submitAnswer(selectedIndex, questionData) {
                 archiveToggle.onclick = () => toggleArchive(result.archive.question_id, false);
             } else {
                 archiveEl.classList.add('kept');
-                archiveText.innerHTML = '<strong>In rotation</strong> — still practising';
+                const iv = result.archive.interval_days || 0;
+                const th = result.archive.archive_threshold || 21;
+                const progress = iv > 0
+                    ? ` — interval ${Math.round(iv)} of ${th} days`
+                    : '';
+                archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
                 archiveToggle.textContent = 'Archive';
                 archiveToggle.onclick = () => toggleArchive(result.archive.question_id, true);
             }
@@ -345,6 +358,15 @@ function showSummary(summary) {
     document.getElementById('summary-total').textContent = summary.total;
     document.getElementById('summary-correct').textContent = summary.correct;
     document.getElementById('summary-accuracy').textContent = summary.accuracy + '%';
+    const breakdown = document.getElementById('summary-breakdown');
+    const rc = summary.review_count || 0;
+    const nc = summary.new_count || 0;
+    if (rc > 0 || nc > 0) {
+        breakdown.textContent = rc + ' review + ' + nc + ' new';
+        breakdown.classList.remove('hidden');
+    } else {
+        breakdown.classList.add('hidden');
+    }
     currentSessionId = null;
 }
 
@@ -600,6 +622,10 @@ async function loadSettings() {
         document.getElementById('set-new-words-val').textContent = s.new_words_per_session;
         document.getElementById('set-min-ready').value = s.min_ready_questions;
         document.getElementById('set-min-ready-val').textContent = s.min_ready_questions;
+        document.getElementById('set-max-active').value = s.max_active_words;
+        document.getElementById('set-max-active-val').textContent = s.max_active_words;
+        document.getElementById('set-archive-interval').value = s.archive_interval_days;
+        document.getElementById('set-archive-interval-val').textContent = s.archive_interval_days;
     } catch (e) {
         console.error('Failed to load settings:', e);
     }
@@ -617,6 +643,14 @@ document.getElementById('set-min-ready').addEventListener('input', (e) => {
     document.getElementById('set-min-ready-val').textContent = e.target.value;
 });
 
+document.getElementById('set-max-active').addEventListener('input', (e) => {
+    document.getElementById('set-max-active-val').textContent = e.target.value;
+});
+
+document.getElementById('set-archive-interval').addEventListener('input', (e) => {
+    document.getElementById('set-archive-interval-val').textContent = e.target.value;
+});
+
 document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
@@ -628,6 +662,8 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
             session_size: parseInt(document.getElementById('set-session-size').value),
             new_words_per_session: parseInt(document.getElementById('set-new-words').value),
             min_ready_questions: parseInt(document.getElementById('set-min-ready').value),
+            max_active_words: parseInt(document.getElementById('set-max-active').value),
+            archive_interval_days: parseInt(document.getElementById('set-archive-interval').value),
         });
         showMessage('settings-message', 'Settings saved.', 'success');
     } catch (e) {
