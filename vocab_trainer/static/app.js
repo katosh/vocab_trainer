@@ -397,6 +397,7 @@ async function submitAnswer(selectedIndex, questionData) {
         };
 
         // Audio: context sentence → pause → explanation
+        stopAllAudio();
         const audio = document.getElementById('tts-audio');
         if (result.context_audio_hash) {
             audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
@@ -637,6 +638,7 @@ function addNarrateButton(msgEl, rawText) {
 }
 
 async function narrateText(btn, text) {
+    stopAllAudio();
     btn.disabled = true;
     btn.textContent = '\u25B6 Generating...';
     try {
@@ -823,6 +825,7 @@ async function sendChatMessage(message) {
     // Set up auto-narration if enabled
     const autoNarrating = autoCompareEnabled;
     if (autoNarrating) {
+        stopAllAudio();
         narrationQueue = new NarrationQueue();
     }
 
