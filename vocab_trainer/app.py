@@ -345,10 +345,10 @@ async def api_session_start():
 
     # 2. Fill remaining slots with new questions, respecting workload cap
     new_count = 0
+    active_count = db.get_active_word_count()
+    room = max(0, s.max_active_words - active_count)
     remaining_slots = s.session_size - len(questions_data)
     if remaining_slots > 0:
-        active_count = db.get_active_word_count()
-        room = max(0, s.max_active_words - active_count)
         new_limit = min(room, remaining_slots)
         if new_limit > 0:
             new_qs = db.get_new_questions(limit=new_limit)
@@ -371,11 +371,14 @@ async def api_session_start():
     # Shuffle pre-generated questions for variety (pending ones go after)
     random.shuffle(questions_data)
 
-    # 4. Fill remaining slots with pending generation
+    # 4. Fill remaining slots with pending generation (respects active-word cap)
     remaining_slots = s.session_size - len(questions_data)
-    if remaining_slots > 0:
-        targets = select_session_words(db, remaining_slots + 10)
+    new_word_room = max(0, room - new_count)
+    pending_limit = min(remaining_slots, new_word_room)
+    if pending_limit > 0:
+        targets = select_session_words(db, pending_limit + 10)
         all_clusters = db.get_all_clusters()
+        pending_added = 0
         for word in targets:
             if word.lower() in seen_words:
                 continue
@@ -389,8 +392,9 @@ async def api_session_start():
                     })
                     seen_words.add(word.lower())
                     new_count += 1
+                    pending_added += 1
                     break
-            if len(questions_data) >= s.session_size:
+            if pending_added >= pending_limit or len(questions_data) >= s.session_size:
                 break
 
     if not questions_data:
