@@ -6,6 +6,15 @@ let questionStartTime = null;
 let currentQuestionContext = null;
 let chatHistory = [];
 let chatStreaming = false;
+let activeAudioElements = [];  // all playing/playable audio to stop on navigation
+
+function stopAllAudio() {
+    activeAudioElements.forEach(a => { a.pause(); a.currentTime = 0; });
+    activeAudioElements = [];
+    // Also stop the built-in TTS player
+    const tts = document.getElementById('tts-audio');
+    if (tts) { tts.pause(); tts.currentTime = 0; }
+}
 
 // ── Navigation ───────────────────────────────────────────────────────────
 
@@ -14,6 +23,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 });
 
 function switchView(view) {
+    stopAllAudio();
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.nav-btn[data-view="${view}"]`).classList.add('active');
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -123,6 +133,8 @@ function showQuizState(state) {
 }
 
 function showQuestion(data) {
+    stopAllAudio();
+
     if (data.session_complete) {
         showSummary(data.summary || { total: 0, correct: 0, accuracy: 0 });
         return;
@@ -475,6 +487,7 @@ async function narrateText(btn, text) {
         const result = await api('/api/tts/generate', 'POST', { text });
         if (result.audio_hash) {
             const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
+            activeAudioElements.push(audio);
             btn.textContent = '\u25A0 Stop';
             btn.disabled = false;
             audio.onended = () => { btn.textContent = '\u25B6 Narrate'; };

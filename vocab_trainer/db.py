@@ -254,10 +254,10 @@ class Database:
         """Pull non-archived banked questions ordered by SRS priority.
 
         Priority:
-        1. Due words the user previously got wrong (struggling)
-        2. Other due words (spaced repetition schedule)
-        3. Never-reviewed words (new material)
-        Least-shown questions preferred within each tier.
+        0. Due words the user previously got wrong (struggling)
+        1. Other due words (spaced repetition schedule)
+        2. Never-reviewed words (new material)
+        3. Reviewed but not yet due (fallback — better than on-the-fly generation)
         """
         now = datetime.now(timezone.utc).isoformat()
         rows = self.conn.execute("""
@@ -274,7 +274,7 @@ class Database:
                 END AS priority
             FROM questions q
             LEFT JOIN reviews r ON q.target_word = r.word
-            WHERE priority < 3 AND q.archived = 0
+            WHERE q.archived = 0
             ORDER BY priority ASC, q.times_shown ASC, RANDOM()
             LIMIT ?
         """, (now, now, limit)).fetchall()
