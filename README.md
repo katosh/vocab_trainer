@@ -1,8 +1,24 @@
 # Vocab Trainer
 
-Interactive vocabulary training app that generates context-rich multiple-choice questions from near-synonym clusters, voices correct answers via TTS, and tracks progress with spaced repetition.
+A vocabulary trainer that teaches the precise differences between similar words. Instead of drilling isolated definitions, it groups near-synonyms and close alternatives into clusters and generates quiz scenarios that force you to distinguish between them — building an intuitive feel for which word fits which context.
 
-Built on ~1,860 words parsed from `vocabulary.md` (1,355 words across 38 categories) and `vocabulary_distinctions.md` (107 near-synonym clusters with nuanced distinctions).
+## Learning Strategy
+
+English is full of words that seem interchangeable until they aren't. *Mitigate* vs *alleviate* vs *ameliorate*. *Rebuke* vs *admonish* vs *chastise*. This trainer targets exactly that gap:
+
+- **Synonym clusters** — Words are organized into groups of near-synonyms, each annotated with its specific shade of meaning and how it differs from the others.
+- **Contextual quizzes** — An LLM generates scenarios where only one word in the cluster is the right fit, teaching you to recognize the precise contexts where each word belongs.
+- **Three question types** — Fill-in-the-blank sentences (60%), best-fit scenarios (25%), and explicit distinction questions (15%), each testing a different facet of word knowledge.
+- **Spaced repetition (SM-2)** — Words you struggle with come back sooner; words you know well space out over days and weeks.
+
+## AI Tutoring
+
+After each answer, the trainer becomes an interactive tutor:
+
+- **Auto-compare** — Automatically asks the AI to compare all four answer choices, explaining when you'd use each one and giving example sentences. Streams the response in real time.
+- **Automated narration** — TTS reads the completed sentence aloud and narrates the AI's explanations, so you absorb the material by listening as well as reading.
+- **Context on demand** — One-click prompts generate example sentences at different complexity levels (simple, intermediate, advanced, literary) or explore a word's etymology and history.
+- **Free-form chat** — Ask the AI anything about the words in the current question: subtle connotations, register differences, common collocations, or anything else.
 
 ## Quick Start
 
@@ -33,8 +49,15 @@ You can also import and generate questions from the web UI's Dashboard view.
 |---------|-------------|
 | `uv run python -m vocab_trainer import` | Parse vocabulary markdown files into SQLite |
 | `uv run python -m vocab_trainer generate --count N` | Pre-generate N questions using the configured LLM |
-| `uv run python -m vocab_trainer serve --port PORT` | Launch web app (default port 8765) |
+| `uv run python -m vocab_trainer serve [--port PORT]` | Launch web app (default port 8765) |
+| `uv run python -m vocab_trainer serve --no-auto-import` | Launch without re-importing changed vocab files |
 | `uv run python -m vocab_trainer stats` | Print progress summary to terminal |
+
+## Vocabulary Data
+
+Bundled vocabulary files live in `data/` and are auto-imported on startup when they change. See [`data/README.md`](data/README.md) for details on editing or replacing them.
+
+When `vocab_files` in `config.json` is empty (the default), all `*.md` files in `data/` are discovered automatically. Set explicit paths to use files from elsewhere.
 
 ## How It Works
 
@@ -69,6 +92,7 @@ During a quiz session:
 vocab_trainer/
 ├── pyproject.toml
 ├── config.json                  # Provider settings, session params
+├── data/                        # Bundled vocabulary files (auto-imported)
 ├── vocab_trainer/
 │   ├── __main__.py              # CLI entry point
 │   ├── app.py                   # FastAPI routes + session management
@@ -110,57 +134,20 @@ All providers are swappable via `config.json` or the Settings page in the web UI
 | Anthropic | `"anthropic"` | `ANTHROPIC_API_KEY` env var |
 | OpenAI | `"openai"` | `OPENAI_API_KEY` env var |
 
-```bash
-# Switch to Claude
-uv run python -c "
-from vocab_trainer.config import load_settings, save_settings
-s = load_settings()
-s.llm_provider = 'anthropic'
-save_settings(s)
-"
-```
-
 ### TTS Providers
 
 | Provider | Config value | Requirements |
 |----------|-------------|--------------|
 | Edge TTS (default) | `"edge-tts"` | None (free Microsoft voices) |
-| ElevenLabs | `"elevenlabs"` | `ELEVEN_LABS_API_KEY` env var, `uv pip install elevenlabs` |
+| ElevenLabs | `"elevenlabs"` | `ELEVEN_LABS_API_KEY` env var |
 | Piper | `"piper"` | `piper` binary on PATH |
-
-### config.json Reference
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `llm_provider` | `"ollama"` | LLM backend |
-| `llm_model` | `"qwen3:8b"` | Model name (Ollama model or API model) |
-| `tts_provider` | `"edge-tts"` | TTS backend |
-| `tts_voice` | `"en-US-GuyNeural"` | Voice ID for edge-tts |
-| `elevenlabs_voice_id` | `"lfBVYbXnblkOddWFfEIg"` | ElevenLabs voice |
-| `session_size` | `20` | Questions per session |
-| `new_words_per_session` | `10` | Max new (unreviewed) words per session |
-| `vocab_files` | `["../vocabulary.md", ...]` | Paths to vocabulary source files |
-| `ollama_url` | `"http://localhost:11434"` | Ollama API endpoint |
 
 ## Running Tests
 
 ```bash
-cd vocab_trainer
 uv run --extra all python -m pytest tests/ -v
 ```
 
-## API Endpoints
+## License
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Serve web UI |
-| `GET` | `/api/stats` | Dashboard data |
-| `POST` | `/api/import` | Re-parse vocab files into DB |
-| `POST` | `/api/generate` | Trigger batch question generation |
-| `POST` | `/api/session/start` | Begin quiz session, return first question |
-| `POST` | `/api/session/answer` | Submit answer, get result + next question |
-| `POST` | `/api/session/next` | Get next question in session |
-| `GET` | `/api/session/summary` | Session history |
-| `GET` | `/api/audio/{hash}.mp3` | Serve cached TTS audio |
-| `GET` | `/api/settings` | Current config |
-| `PUT` | `/api/settings` | Update provider/session settings |
+[MIT](LICENSE)
