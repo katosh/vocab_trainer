@@ -553,6 +553,33 @@ nav {
     font-size: 0.85em;
 }
 
+.chat-msg-actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 6px;
+}
+
+.narrate-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 3px 12px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.narrate-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.narrate-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
 .chat-msg.streaming::after {
     content: '\25CF';
     color: var(--accent);

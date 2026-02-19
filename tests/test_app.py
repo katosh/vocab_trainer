@@ -1,7 +1,9 @@
 """Tests for the FastAPI application routes."""
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,7 @@ from vocab_trainer import app as app_module
 from vocab_trainer.app import app
 from vocab_trainer.config import Settings
 from vocab_trainer.db import Database
+from vocab_trainer.models import Question
 
 
 class FakeLLM:
@@ -44,6 +47,7 @@ def test_app(tmp_path):
     app_module._db = db
     app_module._settings = settings
     app_module._active_sessions.clear()
+    app_module._bg_generating = False
 
     # Patch save_settings and _get_llm so tests never hit real config/LLM
     with patch("vocab_trainer.app.save_settings"), \
@@ -56,6 +60,7 @@ def test_app(tmp_path):
     app_module._db = None
     app_module._settings = None
     app_module._active_sessions.clear()
+    app_module._bg_generating = False
 
 
 @pytest.fixture
@@ -246,3 +251,180 @@ class TestFullSessionFlow:
         data = resp.json()
         assert data["correct"] is False
         assert data["summary"]["accuracy"] == 0.0
+
+
+class TestQuestionBuffer:
+    """Tests for the background question buffer mechanism."""
+
+    def _make_question(self, word="terse", qid=None):
+        return Question(
+            id=qid or str(uuid.uuid4()),
+            question_type="fill_blank",
+            stem="The ___ reply was cold.",
+            choices=["terse", "concise", "pithy", "laconic"],
+            correct_index=0,
+            correct_word=word,
+            explanation="Terse implies rudeness.",
+            context_sentence=f"The {word} reply was cold.",
+            cluster_title="Being Brief",
+            llm_provider="test",
+        )
+
+    def test_archive_on_first_correct(self, test_app_with_data):
+        """Question answered correctly on first encounter gets archived."""
+        client, db, _ = test_app_with_data
+        q = db.get_session_questions(limit=1)[0]
+        assert q["archived"] == 0
+
+        info = db.record_question_shown(q["id"], correct=True)
+        assert info["archived"] is True
+        assert "first try" in info["reason"].lower()
+
+    def test_no_archive_on_first_wrong(self, test_app_with_data):
+        """Wrong answer does not archive."""
+        client, db, _ = test_app_with_data
+        q = db.get_session_questions(limit=1)[0]
+
+        info = db.record_question_shown(q["id"], correct=False)
+        assert info["archived"] is False
+
+    def test_archive_after_two_consecutive_correct(self, test_app_with_data):
+        """After a wrong answer, need 2 consecutive correct to archive."""
+        client, db, _ = test_app_with_data
+        q = db.get_session_questions(limit=1)[0]
+
+        db.record_question_shown(q["id"], correct=False)  # wrong
+        info = db.record_question_shown(q["id"], correct=True)  # 1st correct
+        assert info["archived"] is False
+        info = db.record_question_shown(q["id"], correct=True)  # 2nd correct
+        assert info["archived"] is True
+        assert "twice" in info["reason"].lower()
+
+    def test_archived_excluded_from_session(self, test_app_with_data):
+        """Archived questions are not returned by get_session_questions."""
+        client, db, _ = test_app_with_data
+        q = db.get_session_questions(limit=1)[0]
+
+        db.set_question_archived(q["id"], True)
+        remaining = db.get_session_questions(limit=10)
+        assert all(r["id"] != q["id"] for r in remaining)
+
+    def test_unarchive_resets_streak(self, test_app_with_data):
+        """Un-archiving resets consecutive_correct so mastery must be re-earned."""
+        client, db, _ = test_app_with_data
+        q = db.get_session_questions(limit=1)[0]
+
+        db.record_question_shown(q["id"], correct=True)  # archived
+        db.set_question_archived(q["id"], False)  # un-archive
+
+        # One correct should NOT re-archive (streak was reset)
+        info = db.record_question_shown(q["id"], correct=True)
+        assert info["archived"] is False
+
+    def test_archive_override_via_api(self, test_app_with_data):
+        """POST /api/question/{id}/archive toggles archive status."""
+        client, db, settings = test_app_with_data
+        settings.min_ready_questions = 0  # disable buffer so it doesn't regenerate
+        q = db.get_session_questions(limit=1)[0]
+
+        # Archive via API
+        resp = client.post(f"/api/question/{q['id']}/archive", json={"archived": True})
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is True
+        assert db.get_ready_question_count() == 0
+
+        # Un-archive via API
+        resp = client.post(f"/api/question/{q['id']}/archive", json={"archived": False})
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is False
+        assert db.get_ready_question_count() == 1
+
+    def test_answer_response_includes_archive_info(self, test_app_with_data):
+        """The answer API response includes archive recommendation."""
+        client, db, settings = test_app_with_data
+        settings.session_size = 1
+
+        session_id = db.start_session()
+        q = db.get_session_questions(limit=1)[0]
+        app_module._active_sessions[session_id] = {
+            "questions": [q],
+            "current_index": 0,
+            "total": 0,
+            "correct": 0,
+            "current_question": {
+                "id": q["id"],
+                "correct_index": q["correct_index"],
+                "correct_word": q["target_word"],
+                "explanation": q["explanation"],
+                "context_sentence": q["context_sentence"],
+            },
+        }
+
+        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS")):
+            resp = client.post("/api/session/answer", json={
+                "session_id": session_id,
+                "selected_index": 0,  # correct
+            })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "archive" in data
+        assert data["archive"]["archived"] is True
+        assert data["archive"]["question_id"] == q["id"]
+
+    def test_buffer_triggers_generation(self, test_app_with_data):
+        """When ready count drops below min, _ensure_question_buffer schedules generation."""
+        client, db, settings = test_app_with_data
+        settings.min_ready_questions = 3
+
+        # We have 1 question, need 3 → should trigger
+        generated = []
+        original_generate_batch = app_module.generate_batch
+
+        async def mock_generate_batch(llm, db, count=10, **kw):
+            for i in range(count):
+                q = self._make_question()
+                db.save_question(q)
+                generated.append(q)
+            return generated
+
+        with patch("vocab_trainer.app.generate_batch", side_effect=mock_generate_batch):
+            # Run the buffer check
+            asyncio.get_event_loop().run_until_complete(
+                app_module._ensure_question_buffer()
+            )
+            # Let the background task complete
+            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.1))
+
+        assert len(generated) == 2  # had 1, need 3 → generate 2
+        assert db.get_ready_question_count() == 3
+
+    def test_buffer_no_generation_when_sufficient(self, test_app_with_data):
+        """No generation triggered when ready count >= min."""
+        client, db, settings = test_app_with_data
+        settings.min_ready_questions = 1
+
+        # We have 1 question, need 1 → should NOT trigger
+        with patch("vocab_trainer.app.generate_batch") as mock_gen:
+            asyncio.get_event_loop().run_until_complete(
+                app_module._ensure_question_buffer()
+            )
+            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.1))
+            mock_gen.assert_not_called()
+
+    def test_stats_include_ready_and_archived(self, test_app_with_data):
+        """Stats API returns both ready and archived question counts."""
+        client, db, _ = test_app_with_data
+        resp = client.get("/api/stats")
+        data = resp.json()
+        assert "questions_ready" in data
+        assert "questions_archived" in data
+        assert data["questions_ready"] == 1
+        assert data["questions_archived"] == 0
+
+        # Archive the question
+        q = db.get_session_questions(limit=1)[0]
+        db.set_question_archived(q["id"], True)
+        resp = client.get("/api/stats")
+        data = resp.json()
+        assert data["questions_ready"] == 0
+        assert data["questions_archived"] == 1

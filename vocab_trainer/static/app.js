@@ -456,6 +456,46 @@ function appendChatMessage(role, text) {
     return el;
 }
 
+function addNarrateButton(msgEl, rawText) {
+    const bar = document.createElement('div');
+    bar.className = 'chat-msg-actions';
+    const btn = document.createElement('button');
+    btn.className = 'narrate-btn';
+    btn.textContent = '\u25B6 Narrate';
+    btn.onclick = () => narrateText(btn, rawText);
+    bar.appendChild(btn);
+    msgEl.appendChild(bar);
+}
+
+async function narrateText(btn, text) {
+    btn.disabled = true;
+    btn.textContent = '\u25B6 Generating...';
+    try {
+        const result = await api('/api/tts/generate', 'POST', { text });
+        if (result.audio_hash) {
+            const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
+            btn.textContent = '\u25A0 Stop';
+            btn.disabled = false;
+            audio.onended = () => { btn.textContent = '\u25B6 Narrate'; };
+            btn.onclick = () => {
+                if (audio.paused) {
+                    audio.play();
+                    btn.textContent = '\u25A0 Stop';
+                } else {
+                    audio.pause();
+                    audio.currentTime = 0;
+                    btn.textContent = '\u25B6 Narrate';
+                }
+            };
+            audio.play();
+        }
+    } catch (e) {
+        btn.textContent = '\u25B6 Narrate';
+        btn.disabled = false;
+        console.error('Narration failed:', e);
+    }
+}
+
 function simpleMarkdown(text) {
     return text
         .replace(/&/g, '&amp;')
@@ -521,6 +561,7 @@ async function sendChatMessage(message) {
 
         chatHistory.push({ role: 'user', content: message });
         chatHistory.push({ role: 'assistant', content: fullResponse });
+        if (fullResponse) addNarrateButton(assistantEl, fullResponse);
     } catch (e) {
         assistantEl.innerHTML = simpleMarkdown(`[Connection error: ${e.message}]`);
     } finally {

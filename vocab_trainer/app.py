@@ -76,10 +76,12 @@ async def _ensure_question_buffer():
     """Kick off background generation if the non-archived bank is too low."""
     global _bg_generating
     if _bg_generating:
+        _bg_log.debug("Buffer check: skipped (generation already running)")
         return
     db = get_db()
     s = get_settings()
     ready = db.get_ready_question_count()
+    _bg_log.info("Buffer check: %d ready, %d required", ready, s.min_ready_questions)
     if ready >= s.min_ready_questions:
         return
     need = s.min_ready_questions - ready
@@ -94,11 +96,16 @@ async def _generate_in_background(count: int):
         db = get_db()
         llm = _get_llm()
         questions = await generate_batch(llm, db, count=count)
-        _bg_log.info("Background generation: created %d questions", len(questions))
+        _bg_log.info(
+            "Background generation: created %d questions, bank now %d ready",
+            len(questions), db.get_ready_question_count(),
+        )
     except Exception as e:
         _bg_log.warning("Background generation failed: %s", e)
     finally:
         _bg_generating = False
+        # Re-check: more archiving may have happened during generation
+        await _ensure_question_buffer()
 
 
 @app.on_event("startup")
@@ -108,6 +115,7 @@ async def startup():
         return  # Already initialized (e.g. by tests)
     _settings = load_settings()
     _db = Database(_settings.db_full_path)
+    await _ensure_question_buffer()
 
 
 @app.on_event("shutdown")
@@ -463,6 +471,38 @@ async def api_audio(audio_hash: str):
     if not audio_path.exists():
         raise HTTPException(404, "Audio not found")
     return FileResponse(audio_path, media_type="audio/mpeg")
+
+
+@app.post("/api/tts/generate")
+async def api_tts_generate(request: Request):
+    """Generate TTS for arbitrary text (e.g. chat responses). Returns audio hash."""
+    body = await request.json()
+    text = body.get("text", "").strip()
+    if not text:
+        raise HTTPException(400, "No text provided")
+
+    # Strip markdown formatting for cleaner speech
+    import re
+    clean = text
+    clean = re.sub(r"\*\*(.+?)\*\*", r"\1", clean)  # bold
+    clean = re.sub(r"\*(.+?)\*", r"\1", clean)       # italic
+    clean = re.sub(r"`(.+?)`", r"\1", clean)          # inline code
+    clean = re.sub(r"^#{1,4}\s+", "", clean, flags=re.MULTILINE)  # headings
+    clean = re.sub(r"\n{2,}", "\n", clean)             # collapse blank lines
+
+    try:
+        tts = _get_tts()
+        s = get_settings()
+        db = get_db()
+        audio_path = await get_or_create_audio(clean, tts, db, s.audio_cache_full_path)
+        if audio_path:
+            audio_hash = sentence_hash(clean)
+            return {"audio_hash": audio_hash}
+        raise HTTPException(500, "TTS generation failed")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"TTS error: {e}")
 
 
 # ── API: Settings ─────────────────────────────────────────────────────────
