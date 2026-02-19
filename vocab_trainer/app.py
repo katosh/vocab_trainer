@@ -108,6 +108,58 @@ async def _generate_in_background(count: int):
         await _ensure_question_buffer()
 
 
+_pregen_log = logging.getLogger("vocab_trainer.pregen")
+
+
+async def _pregenerate_session_questions(session_id: int, pending_indices: list[int]):
+    """Generate pending session questions in the background."""
+    llm = _get_llm()
+    db = get_db()
+    for idx in pending_indices:
+        session = _active_sessions.get(session_id)
+        if session is None:
+            _pregen_log.info("Session %d gone, stopping pre-generation", session_id)
+            return
+        q_data = session["questions"][idx]
+        if "pending_cluster" not in q_data:
+            continue  # Already generated (e.g. by _get_next_question)
+        # Mark as in-flight so _get_next_question won't duplicate the work
+        cluster, word_info = q_data.pop("pending_cluster"), q_data.pop("pending_word")
+        q_data["generating"] = True
+        try:
+            q = await generate_question(
+                llm, db,
+                cluster=cluster,
+                target_word_info=word_info,
+            )
+            if q:
+                db.save_question(q)
+                session["questions"][idx] = {
+                    "id": q.id,
+                    "question_type": q.question_type,
+                    "stem": q.stem,
+                    "choices_json": json.dumps(q.choices),
+                    "correct_index": q.correct_index,
+                    "correct_word": q.correct_word,
+                    "explanation": q.explanation,
+                    "context_sentence": q.context_sentence,
+                    "cluster_title": q.cluster_title,
+                }
+                _pregen_log.info("Pre-generated question %d/%d for session %d",
+                                 idx + 1, len(session["questions"]), session_id)
+            else:
+                # Restore pending state so _get_next_question can retry
+                q_data["pending_cluster"] = cluster
+                q_data["pending_word"] = word_info
+                q_data.pop("generating", None)
+        except Exception as e:
+            _pregen_log.warning("Pre-generation failed for index %d: %s", idx, e)
+            # Restore pending state so _get_next_question can retry
+            q_data["pending_cluster"] = cluster
+            q_data["pending_word"] = word_info
+            q_data.pop("generating", None)
+
+
 def _auto_import_if_changed(db: Database, settings: Settings) -> None:
     """Re-import vocab files whose mtime has changed since the last import."""
     log = logging.getLogger("auto-import")
@@ -263,13 +315,14 @@ async def api_session_start():
     # Shuffle for variety
     random.shuffle(questions_data)
 
-    # 4. Fall back to on-the-fly generation only if all pools are empty
-    if not questions_data:
-        targets = select_session_words(db, s.session_size)
+    # 4. Fill remaining slots with pending generation
+    remaining_slots = s.session_size - len(questions_data)
+    if remaining_slots > 0:
+        targets = select_session_words(db, remaining_slots + 10)
+        all_clusters = db.get_all_clusters()
         for word in targets:
             if word.lower() in seen_words:
                 continue
-            all_clusters = db.get_all_clusters()
             for cl in all_clusters:
                 cw = db.get_cluster_words(cl["id"])
                 word_info = next((w for w in cw if w["word"].lower() == word.lower()), None)
@@ -279,6 +332,7 @@ async def api_session_start():
                         "pending_word": word_info,
                     })
                     seen_words.add(word.lower())
+                    new_count += 1
                     break
             if len(questions_data) >= s.session_size:
                 break
@@ -295,6 +349,11 @@ async def api_session_start():
         "review_count": review_count,
         "new_count": new_count,
     }
+
+    # Pre-generate pending questions in the background
+    pending = [i for i, q in enumerate(questions_data) if "pending_cluster" in q]
+    if pending:
+        asyncio.create_task(_pregenerate_session_questions(session_id, pending))
 
     # Return first question
     return await _get_next_question(session_id)
@@ -402,6 +461,15 @@ async def _get_next_question(session_id: int) -> dict:
         return {"session_complete": True, "session_id": session_id}
 
     q_data = session["questions"][idx]
+
+    # Wait for background pre-generation if in-flight
+    if q_data.get("generating"):
+        for _ in range(60):  # up to ~30s
+            await asyncio.sleep(0.5)
+            q_data = session["questions"][idx]
+            if not q_data.get("generating"):
+                break
+        # If still generating after timeout, fall through to pending/skip logic
 
     # Handle pending (on-the-fly generation)
     if "pending_cluster" in q_data:
