@@ -534,14 +534,19 @@ const CHAT_PROMPTS = {
         'The sentence was: "{stem}"\nI chose "{chosen}" — {result}.\n\nCompare all four choices ({choices}). For each word, explain what it means, when you\'d use it vs the others, and give 2 example sentences. Write in flowing conversational prose — no tables, no bullet points, no numbered lists.',
 };
 
-let selectedComplexity = 'simple';
+let selectedComplexity = localStorage.getItem('contextLevel') || 'simple';
 
-// Complexity selector
+// Complexity selector — restore active state and persist choice
 document.querySelectorAll('.complexity-btn').forEach(btn => {
+    if (btn.dataset.level === selectedComplexity) {
+        document.querySelectorAll('.complexity-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }
     btn.addEventListener('click', () => {
         document.querySelectorAll('.complexity-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         selectedComplexity = btn.dataset.level;
+        localStorage.setItem('contextLevel', selectedComplexity);
     });
 });
 
