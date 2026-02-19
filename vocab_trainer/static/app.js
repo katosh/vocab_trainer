@@ -11,6 +11,99 @@ let pendingAudioTimeout = null;
 let autoCompareEnabled = localStorage.getItem('autoCompare') === 'true';
 let narrationQueue = null;
 
+// ── Stick-to-bottom auto-scroll ─────────────────────────────────────────
+// Uses ResizeObserver to detect content growth + wheel events to detect
+// user scroll-up intent.  Smooth scrolling throughout.
+const chatScroll = {
+    sticky: true,           // are we "stuck" to the bottom?
+    programmatic: false,    // is the current scroll animation ours?
+    container: null,
+    observer: null,
+
+    init() {
+        this.container = document.getElementById('chat-messages');
+        if (!this.container) return;
+
+        // ResizeObserver fires when content grows (new tokens, new messages)
+        this.observer = new ResizeObserver(() => {
+            if (this.sticky) this._scroll();
+        });
+        this.observer.observe(this.container);
+
+        // Wheel event: upward scroll breaks stickiness immediately
+        this.container.addEventListener('wheel', (e) => {
+            if (e.deltaY < 0) {
+                this.sticky = false;
+                this._updateButton();
+            }
+        }, { passive: true });
+
+        // Touch: break stickiness during touch, re-check after momentum
+        this.container.addEventListener('touchstart', () => {
+            this.sticky = false;
+            this._updateButton();
+        }, { passive: true });
+        this.container.addEventListener('touchend', () => {
+            // After momentum settles, check if we ended up at the bottom
+            setTimeout(() => this._checkReengage(), 800);
+        }, { passive: true });
+
+        // Re-engage stickiness when user scrolls back to bottom
+        this.container.addEventListener('scroll', () => {
+            if (!this.programmatic) {
+                this._checkReengage();
+            }
+        }, { passive: true });
+
+        // scrollend cleans up programmatic flag reliably
+        this.container.addEventListener('scrollend', () => {
+            this.programmatic = false;
+            this._checkReengage();
+        });
+
+        // Scroll-to-bottom button
+        const btn = document.getElementById('scroll-to-bottom');
+        if (btn) btn.addEventListener('click', () => this.scrollToBottom());
+    },
+
+    _isAtBottom() {
+        const c = this.container;
+        return c.scrollHeight - c.scrollTop - c.clientHeight < 5;
+    },
+
+    _checkReengage() {
+        if (!this.sticky && this._isAtBottom()) {
+            this.sticky = true;
+        }
+        this._updateButton();
+    },
+
+    _scroll() {
+        if (!this.container) return;
+        this.programmatic = true;
+        this.container.scrollTo({
+            top: this.container.scrollHeight,
+            behavior: 'smooth',
+        });
+        // Fallback: clear programmatic flag after animation
+        // (scrollend may not fire in all browsers)
+        clearTimeout(this._scrollTimer);
+        this._scrollTimer = setTimeout(() => { this.programmatic = false; }, 300);
+    },
+
+    _updateButton() {
+        const btn = document.getElementById('scroll-to-bottom');
+        if (btn) btn.classList.toggle('hidden', this.sticky);
+    },
+
+    /** Force re-engage and scroll (e.g. user sends a new message) */
+    scrollToBottom() {
+        this.sticky = true;
+        this._scroll();
+        this._updateButton();
+    },
+};
+
 function setAutoCompare(enabled) {
     autoCompareEnabled = enabled;
     localStorage.setItem('autoCompare', enabled);
@@ -608,7 +701,7 @@ function appendChatMessage(role, text) {
     }
     const container = document.getElementById('chat-messages');
     container.appendChild(el);
-    container.scrollTop = container.scrollHeight;
+    // ResizeObserver handles scrolling; no manual call needed
     return el;
 }
 
@@ -817,7 +910,6 @@ function simpleMarkdown(text) {
 async function sendChatMessage(message) {
     if (chatStreaming) return;
     chatStreaming = true;
-
     // Disable buttons while streaming
     document.querySelectorAll('.chat-btn, .chat-send-btn, .word-action-btn').forEach(b => b.disabled = true);
 
@@ -828,6 +920,7 @@ async function sendChatMessage(message) {
     }
 
     appendChatMessage('user', message);
+    chatScroll.scrollToBottom();  // Force re-engage on new prompt
     const assistantEl = appendChatMessage('assistant', '');
     assistantEl.classList.add('streaming');
 
@@ -860,8 +953,6 @@ async function sendChatMessage(message) {
                         fullResponse += data.token;
                         if (autoNarrating && narrationQueue) narrationQueue.feedToken(data.token);
                         assistantEl.innerHTML = simpleMarkdown(fullResponse);
-                        const container = document.getElementById('chat-messages');
-                        container.scrollTop = container.scrollHeight;
                     }
                     if (data.error) {
                         fullResponse += `\n[Error: ${data.error}]`;
@@ -901,6 +992,7 @@ async function sendChatMessage(message) {
             } else {
                 addNarrateButton(assistantEl, fullResponse);
             }
+            // ResizeObserver handles scroll; button append triggers it
         }
     } catch (e) {
         assistantEl.innerHTML = simpleMarkdown(`[Connection error: ${e.message}]`);
@@ -1123,4 +1215,5 @@ function showMessage(elementId, text, type) {
 
 // ── Init ─────────────────────────────────────────────────────────────────
 
+chatScroll.init();
 refreshStats();
