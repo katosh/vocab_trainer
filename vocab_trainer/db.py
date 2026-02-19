@@ -333,6 +333,8 @@ class Database:
     def get_review_questions(self, limit: int = 20) -> list[dict]:
         """Non-archived questions for words already in rotation and due for review.
 
+        Includes never-shown questions for due words (e.g. freshly generated
+        questions for a word that already has review history).
         Priority: struggling words first, then by staleness.
         """
         now = datetime.now(timezone.utc).isoformat()
@@ -341,7 +343,6 @@ class Database:
             FROM questions q
             JOIN reviews r ON q.target_word = r.word
             WHERE q.archived = 0
-              AND q.times_shown > 0
               AND r.next_review <= ?
             ORDER BY
                 CASE WHEN r.total_incorrect > r.total_correct THEN 0 ELSE 1 END ASC,
@@ -351,9 +352,10 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_new_questions(self, limit: int = 10) -> list[dict]:
-        """Non-archived questions that have never been shown (new material)."""
+        """Non-archived questions for words with no review history (truly new)."""
         rows = self.conn.execute(
             "SELECT * FROM questions WHERE archived = 0 AND times_shown = 0 "
+            "AND target_word NOT IN (SELECT word FROM reviews) "
             "ORDER BY RANDOM() LIMIT ?",
             (limit,),
         ).fetchall()

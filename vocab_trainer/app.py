@@ -608,7 +608,8 @@ async def _get_next_question(session_id: int) -> dict:
         choice_details = [choice_details[i] for i in indices]
     correct_index = indices.index(correct_index)
 
-    times_shown = q_data.get("times_shown", 0) or 0
+    target_word = q_data.get("correct_word", q_data.get("target_word", ""))
+    has_review = db.get_review(target_word) is not None
     question = {
         "session_id": session_id,
         "question_type": q_data.get("question_type", "fill_blank"),
@@ -616,12 +617,12 @@ async def _get_next_question(session_id: int) -> dict:
         "choices": choices,
         "choice_details": choice_details,
         "correct_index": correct_index,
-        "correct_word": q_data.get("correct_word", q_data.get("target_word", "")),
+        "correct_word": target_word,
         "explanation": q_data.get("explanation", ""),
         "context_sentence": q_data.get("context_sentence", ""),
         "cluster_title": cluster_title,
         "id": q_data.get("id", ""),
-        "is_new": times_shown == 0,
+        "is_new": not has_review,
         "progress": {
             "current": idx + 1,
             "total": len(session["questions"]),
