@@ -722,12 +722,18 @@ document.querySelectorAll('.library-tab').forEach(btn => {
 });
 
 async function refreshLibrary() {
-    const [active, archived] = await Promise.all([
-        api('/api/questions/active'),
-        api('/api/questions/archived'),
-    ]);
-    renderLibraryPanel('library-active', active, false);
-    renderLibraryPanel('library-archived', archived, true);
+    try {
+        const [active, archived] = await Promise.all([
+            api('/api/questions/active'),
+            api('/api/questions/archived'),
+        ]);
+        renderLibraryPanel('library-active', active, false);
+        renderLibraryPanel('library-archived', archived, true);
+    } catch (e) {
+        console.error('Failed to load library:', e);
+        document.getElementById('library-active').innerHTML =
+            `<p class="library-empty">Failed to load: ${e.message}</p>`;
+    }
 }
 
 function renderLibraryPanel(containerId, questions, isArchived) {
