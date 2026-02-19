@@ -112,38 +112,25 @@ _pregen_log = logging.getLogger("vocab_trainer.pregen")
 
 
 async def _pregenerate_session_questions(session_id: int, pending_indices: list[int]):
-    """Generate pending session questions in the background.
+    """Generate pending session questions sequentially in queue order.
 
-    Each iteration picks the pending question closest to (but >= )
-    the user's current_index, so the next question the user will
-    need is always generated first.
+    pending_indices is already sorted by session position, so the
+    next question the user will need is always generated first.
+    Only this task calls the LLM — _get_next_question just waits.
     """
     llm = _get_llm()
     db = get_db()
-    remaining = set(pending_indices)
 
-    while remaining:
+    for idx in pending_indices:
         session = _active_sessions.get(session_id)
         if session is None:
             _pregen_log.info("Session %d gone, stopping pre-generation", session_id)
             return
 
-        # Pick the pending index closest to (>= ) current playback position
-        current = session["current_index"]
-        ahead = sorted(i for i in remaining if i >= current)
-        behind = sorted(i for i in remaining if i < current)
-        order = ahead + behind  # prioritize ahead, then wrap around
-        if not order:
-            break
-
-        idx = order[0]
-        remaining.discard(idx)
-
         q_data = session["questions"][idx]
         if "pending_cluster" not in q_data:
-            continue  # Already generated (e.g. by _get_next_question)
+            continue  # Already handled
 
-        # Mark as in-flight so _get_next_question won't duplicate the work
         cluster, word_info = q_data.pop("pending_cluster"), q_data.pop("pending_word")
         q_data["generating"] = True
         try:
@@ -168,16 +155,13 @@ async def _pregenerate_session_questions(session_id: int, pending_indices: list[
                 _pregen_log.info("Pre-generated question %d/%d for session %d",
                                  idx + 1, len(session["questions"]), session_id)
             else:
-                # Restore pending state so _get_next_question can retry
-                q_data["pending_cluster"] = cluster
-                q_data["pending_word"] = word_info
                 q_data.pop("generating", None)
+                q_data["generation_failed"] = True
+                _pregen_log.warning("Pre-generation returned None for index %d", idx)
         except Exception as e:
             _pregen_log.warning("Pre-generation failed for index %d: %s", idx, e)
-            # Restore pending state so _get_next_question can retry
-            q_data["pending_cluster"] = cluster
-            q_data["pending_word"] = word_info
             q_data.pop("generating", None)
+            q_data["generation_failed"] = True
 
 
 def _auto_import_if_changed(db: Database, settings: Settings) -> None:
@@ -363,7 +347,7 @@ async def api_session_start():
     review_count = len(questions_data)
     seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
 
-    # 2. Fill remaining slots with new questions, respecting workload cap
+    # 2. Fill remaining slots with new banked questions, respecting workload cap
     new_count = 0
     active_count = db.get_active_word_count()
     room = max(0, s.max_active_words - active_count)
@@ -388,14 +372,17 @@ async def api_session_start():
                 questions_data.append(q)
                 seen_words.add(q["target_word"].lower())
 
-    # 4. Fill remaining slots with pending generation (respects active-word cap)
+    # Shuffle banked questions for variety
+    random.shuffle(questions_data)
+
+    # 4. Build generation queue for remaining slots (ordered, not shuffled)
+    pending_queue: list[dict] = []
     remaining_slots = s.session_size - len(questions_data)
     new_word_room = max(0, room - new_count)
     pending_limit = min(remaining_slots, new_word_room)
     if pending_limit > 0:
         targets = select_session_words(db, pending_limit + 10)
         all_clusters = db.get_all_clusters()
-        pending_added = 0
         for word in targets:
             if word.lower() in seen_words:
                 continue
@@ -403,28 +390,39 @@ async def api_session_start():
                 cw = db.get_cluster_words(cl["id"])
                 word_info = next((w for w in cw if w["word"].lower() == word.lower()), None)
                 if word_info and len(cw) >= 4:
-                    questions_data.append({
+                    pending_queue.append({
                         "pending_cluster": cl,
                         "pending_word": word_info,
                     })
                     seen_words.add(word.lower())
                     new_count += 1
-                    pending_added += 1
                     break
-            if pending_added >= pending_limit or len(questions_data) >= s.session_size:
+            if len(pending_queue) >= pending_limit:
                 break
 
-    if not questions_data:
+    if not questions_data and not pending_queue:
         return {"error": "No questions available. Import vocabulary and generate questions first.", "session_id": None}
 
-    # Shuffle ALL questions (banked + pending) so pending ones are
-    # interleaved rather than clumped at the end — gives background
-    # generation more time before the user reaches each pending slot.
-    random.shuffle(questions_data)
+    # Interleave: distribute pending slots evenly among banked questions
+    # so the user always has banked runway while background generates.
+    banked = questions_data
+    final: list[dict] = []
+    bi, pi = 0, 0
+    total = len(banked) + len(pending_queue)
+    for _ in range(total):
+        banked_target = (_ + 1) * len(banked) / total if total else 0
+        if bi < len(banked) and (pi >= len(pending_queue) or bi < banked_target):
+            final.append(banked[bi])
+            bi += 1
+        else:
+            final.append(pending_queue[pi])
+            pi += 1
+    final.extend(banked[bi:])
+    final.extend(pending_queue[pi:])
 
     # Store session state
     _active_sessions[session_id] = {
-        "questions": questions_data,
+        "questions": final,
         "current_index": 0,
         "total": 0,
         "correct": 0,
@@ -432,11 +430,11 @@ async def api_session_start():
         "new_count": new_count,
     }
 
-    # Pre-generate pending questions in the background,
-    # prioritizing those closest to the front of the queue.
-    pending = [i for i, q in enumerate(questions_data) if "pending_cluster" in q]
-    if pending:
-        asyncio.create_task(_pregenerate_session_questions(session_id, pending))
+    # Background task generates pending questions sequentially —
+    # indices are in session order so nearest-needed is generated first.
+    pending_indices = [i for i, q in enumerate(final) if "pending_cluster" in q]
+    if pending_indices:
+        asyncio.create_task(_pregenerate_session_questions(session_id, pending_indices))
 
     # Return first question
     return await _get_next_question(session_id)
@@ -545,61 +543,24 @@ async def _get_next_question(session_id: int) -> dict:
 
     q_data = session["questions"][idx]
 
-    # Wait for background pre-generation if in-flight
-    if q_data.get("generating"):
-        for _ in range(60):  # up to ~30s
+    # Wait for background generation (queued or in-flight).
+    # Never call the LLM here — the single background task owns all
+    # generation so it doesn't compete with Ollama for the GPU.
+    if q_data.get("generating") or "pending_cluster" in q_data:
+        for _ in range(180):  # up to ~90s
             await asyncio.sleep(0.5)
             q_data = session["questions"][idx]
-            if not q_data.get("generating"):
+            if not q_data.get("generating") and "pending_cluster" not in q_data:
                 break
         else:
-            # Timed out — skip this question
+            # Timed out or generation failed — skip this question
             session["current_index"] += 1
             return await _get_next_question(session_id)
 
-    # Handle pending (on-the-fly generation)
-    if "pending_cluster" in q_data:
-        try:
-            llm = _get_llm()
-            db = get_db()
-            q = await generate_question(
-                llm, db,
-                cluster=q_data["pending_cluster"],
-                target_word_info=q_data["pending_word"],
-            )
-            if q:
-                db.save_question(q)
-                q_data = {
-                    "id": q.id,
-                    "question_type": q.question_type,
-                    "stem": q.stem,
-                    "choices_json": json.dumps(q.choices),
-                    "correct_index": q.correct_index,
-                    "correct_word": q.correct_word,
-                    "explanation": q.explanation,
-                    "context_sentence": q.context_sentence,
-                    "cluster_title": q.cluster_title,
-                }
-                session["questions"][idx] = q_data
-            else:
-                # Generation failed — skip this question
-                session["current_index"] += 1
-                if session["current_index"] >= len(session["questions"]):
-                    del _active_sessions[session_id]
-                    return {
-                        "error": "Question generation failed. Check that your LLM provider is running and configured.",
-                        "session_id": session_id,
-                    }
-                return await _get_next_question(session_id)
-        except Exception as e:
-            session["current_index"] += 1
-            if session["current_index"] >= len(session["questions"]):
-                del _active_sessions[session_id]
-                return {
-                    "error": f"LLM provider error: {e}",
-                    "session_id": session_id,
-                }
-            return await _get_next_question(session_id)
+    # Generation failed — skip
+    if q_data.get("generation_failed"):
+        session["current_index"] += 1
+        return await _get_next_question(session_id)
 
     # Parse choices
     choices = q_data.get("choices_json", "[]")
