@@ -577,6 +577,32 @@ nav {
     cursor: not-allowed;
 }
 
+.auto-compare-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px 4px 8px;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+}
+
+.auto-compare-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.auto-compare-toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+    margin: 0;
+    cursor: pointer;
+}
+
 .complexity-selector {
     display: flex;
     gap: 2px;

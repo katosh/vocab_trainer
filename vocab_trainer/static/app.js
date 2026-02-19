@@ -8,8 +8,16 @@ let chatHistory = [];
 let chatStreaming = false;
 let activeAudioElements = [];  // all playing/playable audio to stop on navigation
 let pendingAudioTimeout = null;
+let autoCompareEnabled = localStorage.getItem('autoCompare') === 'true';
+let narrationQueue = null;
+
+function setAutoCompare(enabled) {
+    autoCompareEnabled = enabled;
+    localStorage.setItem('autoCompare', enabled);
+}
 
 function stopAllAudio() {
+    if (narrationQueue) { narrationQueue.stop(); narrationQueue = null; }
     if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
     activeAudioElements.forEach(a => { a.pause(); a.currentTime = 0; });
     activeAudioElements = [];
@@ -386,8 +394,17 @@ async function submitAnswer(selectedIndex, questionData) {
             choice_details: questionData.choice_details || [],
         };
 
-        // Audio: context sentence → pause → explanation
+        // Auto-compare: set up narration queue before audio chain
+        if (autoCompareEnabled) {
+            narrationQueue = new NarrationQueue();
+            narrationQueue.held = true;
+        }
+
+        // Audio: context sentence → pause → explanation → release narration
         const audio = document.getElementById('tts-audio');
+        const audioChainDone = () => {
+            if (narrationQueue) narrationQueue.release();
+        };
         if (result.context_audio_hash) {
             audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
             audio.hidden = false;
@@ -396,16 +413,27 @@ async function submitAnswer(selectedIndex, questionData) {
                     pendingAudioTimeout = setTimeout(() => {
                         pendingAudioTimeout = null;
                         audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
-                        audio.onended = null;
-                        audio.play().catch(() => {});
+                        audio.onended = () => audioChainDone();
+                        audio.play().catch(() => audioChainDone());
                     }, 800);
+                } else {
+                    audioChainDone();
                 }
             };
-            audio.play().catch(() => {});
+            audio.play().catch(() => audioChainDone());
         } else if (result.explanation_audio_hash) {
             audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
             audio.hidden = false;
-            audio.play().catch(() => {});
+            audio.onended = () => audioChainDone();
+            audio.play().catch(() => audioChainDone());
+        } else {
+            audioChainDone();
+        }
+
+        // Fire auto-compare LLM request (runs in parallel with audio)
+        if (autoCompareEnabled && currentQuestionContext) {
+            const msg = buildAutoCompareMessage(questionData, selectedIndex, result.correct);
+            sendChatMessage(msg, { narrate: true });
         }
 
         // Update progress text
@@ -524,6 +552,17 @@ const CHAT_PROMPTS = {
         'Compare all four choices ({choices}) in detail. For each, explain exactly when you\'d use it vs the others, with a concrete example sentence highlighting the distinction.',
 };
 
+function buildAutoCompareMessage(questionData, selectedIndex, correct) {
+    let msg = CHAT_PROMPTS.compare.replace(
+        '{choices}', questionData.choices.join(', '));
+    if (correct) {
+        msg += `\n\nThe student correctly chose "${questionData.choices[selectedIndex]}". Affirm the choice briefly, then contrast with the alternatives.`;
+    } else {
+        msg += `\n\nThe student incorrectly chose "${questionData.choices[selectedIndex]}" instead of "${questionData.choices[questionData.correct_index]}". Explain why the correct answer fits better and why the student's choice doesn't work here.`;
+    }
+    return msg;
+}
+
 let selectedComplexity = 'simple';
 
 // Complexity selector
@@ -546,6 +585,13 @@ document.querySelectorAll('.chat-btn').forEach(btn => {
             sendChatMessage(message);
         }
     });
+});
+
+// Auto-compare toggle
+const autoCompareCheckbox = document.getElementById('auto-compare-toggle');
+autoCompareCheckbox.checked = autoCompareEnabled;
+autoCompareCheckbox.addEventListener('change', () => {
+    setAutoCompare(autoCompareCheckbox.checked);
 });
 
 // Per-word action buttons (delegated from choice-details container)
@@ -636,6 +682,123 @@ async function narrateText(btn, text) {
     }
 }
 
+class NarrationQueue {
+    constructor() {
+        this.buffer = '';
+        this.sentences = [];
+        this.currentIndex = 0;
+        this.playing = false;
+        this.held = false;
+        this.stopped = false;
+    }
+
+    feedToken(token) {
+        if (this.stopped) return;
+        this.buffer += token;
+        this._extractSentences();
+    }
+
+    _extractSentences() {
+        while (true) {
+            const paraIdx = this.buffer.indexOf('\n\n');
+            if (paraIdx > 0) {
+                const sentence = this.buffer.slice(0, paraIdx).trim();
+                this.buffer = this.buffer.slice(paraIdx + 2);
+                if (sentence) this._enqueueSentence(sentence);
+                continue;
+            }
+            if (this.buffer.length > 20) {
+                const match = this.buffer.match(/([.!?:])(\s)/);
+                if (match) {
+                    const endIdx = match.index + 1;
+                    const sentence = this.buffer.slice(0, endIdx).trim();
+                    this.buffer = this.buffer.slice(endIdx).trimStart();
+                    if (sentence) this._enqueueSentence(sentence);
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
+    flush() {
+        if (this.stopped) return;
+        const remaining = this.buffer.trim();
+        this.buffer = '';
+        if (remaining) this._enqueueSentence(remaining);
+    }
+
+    stop() {
+        this.stopped = true;
+        this.sentences.forEach(s => {
+            if (s.audio) { s.audio.pause(); s.audio.currentTime = 0; }
+        });
+    }
+
+    release() {
+        this.held = false;
+        this._tryPlay();
+    }
+
+    _enqueueSentence(text) {
+        const clean = text
+            .replace(/\*\*(.+?)\*\*/g, '$1')
+            .replace(/\*(.+?)\*/g, '$1')
+            .replace(/`(.+?)`/g, '$1')
+            .replace(/^#+\s*/gm, '')
+            .replace(/\n/g, ' ')
+            .trim();
+        if (!clean) return;
+        const index = this.sentences.length;
+        this.sentences.push({ text: clean, audio: null, ready: false, failed: false });
+        this._generateAudio(index, clean);
+    }
+
+    async _generateAudio(index, text) {
+        if (this.stopped) return;
+        try {
+            const result = await api('/api/tts/generate', 'POST', { text });
+            if (this.stopped) return;
+            if (result.audio_hash) {
+                const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
+                activeAudioElements.push(audio);
+                this.sentences[index].audio = audio;
+                this.sentences[index].ready = true;
+                audio.onended = () => {
+                    this.playing = false;
+                    this.currentIndex++;
+                    this._tryPlay();
+                };
+                this._tryPlay();
+            } else {
+                this.sentences[index].failed = true;
+                if (index === this.currentIndex) this._tryPlay();
+            }
+        } catch (e) {
+            if (this.stopped) return;
+            console.error('Narration TTS failed:', e);
+            this.sentences[index].failed = true;
+            if (index === this.currentIndex) this._tryPlay();
+        }
+    }
+
+    _tryPlay() {
+        if (this.stopped || this.held || this.playing) return;
+        while (this.currentIndex < this.sentences.length && this.sentences[this.currentIndex].failed) {
+            this.currentIndex++;
+        }
+        if (this.currentIndex >= this.sentences.length) return;
+        const sentence = this.sentences[this.currentIndex];
+        if (!sentence.ready || !sentence.audio) return;
+        this.playing = true;
+        sentence.audio.play().catch(() => {
+            this.playing = false;
+            this.currentIndex++;
+            this._tryPlay();
+        });
+    }
+}
+
 function simpleMarkdown(text) {
     return text
         .replace(/&/g, '&amp;')
@@ -647,7 +810,7 @@ function simpleMarkdown(text) {
         .replace(/\n/g, '<br>');
 }
 
-async function sendChatMessage(message) {
+async function sendChatMessage(message, opts = {}) {
     if (chatStreaming) return;
     chatStreaming = true;
 
@@ -685,6 +848,7 @@ async function sendChatMessage(message) {
                     const data = JSON.parse(line.slice(6));
                     if (data.token) {
                         fullResponse += data.token;
+                        if (opts.narrate && narrationQueue) narrationQueue.feedToken(data.token);
                         assistantEl.innerHTML = simpleMarkdown(fullResponse);
                         const container = document.getElementById('chat-messages');
                         container.scrollTop = container.scrollHeight;
@@ -699,6 +863,7 @@ async function sendChatMessage(message) {
             }
         }
 
+        if (opts.narrate && narrationQueue) narrationQueue.flush();
         chatHistory.push({ role: 'user', content: message });
         chatHistory.push({ role: 'assistant', content: fullResponse });
         if (fullResponse) addNarrateButton(assistantEl, fullResponse);
