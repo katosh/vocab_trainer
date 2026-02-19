@@ -350,28 +350,6 @@ class Database:
         """, (now, limit)).fetchall()
         return [dict(r) for r in rows]
 
-    def get_backfill_questions(self, limit: int = 20, exclude_ids: set | None = None) -> list[dict]:
-        """Non-archived, shown questions NOT yet due — used to fill sessions.
-
-        These are active words that were recently reviewed and aren't due yet,
-        so repeating them is better than leaving the session short.
-        """
-        now = datetime.now(timezone.utc).isoformat()
-        rows = self.conn.execute("""
-            SELECT q.*
-            FROM questions q
-            JOIN reviews r ON q.target_word = r.word
-            WHERE q.archived = 0
-              AND q.times_shown > 0
-              AND r.next_review > ?
-            ORDER BY r.next_review ASC
-            LIMIT ?
-        """, (now, limit)).fetchall()
-        results = [dict(r) for r in rows]
-        if exclude_ids:
-            results = [r for r in results if r["id"] not in exclude_ids]
-        return results
-
     def get_new_questions(self, limit: int = 10) -> list[dict]:
         """Non-archived questions that have never been shown (new material)."""
         rows = self.conn.execute(
