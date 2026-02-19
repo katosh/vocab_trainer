@@ -7,13 +7,15 @@ let currentQuestionContext = null;
 let chatHistory = [];
 let chatStreaming = false;
 let activeAudioElements = [];  // all playing/playable audio to stop on navigation
+let pendingAudioTimeout = null;
 
 function stopAllAudio() {
+    if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
     activeAudioElements.forEach(a => { a.pause(); a.currentTime = 0; });
     activeAudioElements = [];
     // Also stop the built-in TTS player
     const tts = document.getElementById('tts-audio');
-    if (tts) { tts.pause(); tts.currentTime = 0; }
+    if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
 }
 
 // ── Navigation ───────────────────────────────────────────────────────────
@@ -311,7 +313,8 @@ async function submitAnswer(selectedIndex, questionData) {
             audio.hidden = false;
             audio.onended = () => {
                 if (result.explanation_audio_hash) {
-                    setTimeout(() => {
+                    pendingAudioTimeout = setTimeout(() => {
+                        pendingAudioTimeout = null;
                         audio.src = `/api/audio/${result.explanation_audio_hash}.mp3`;
                         audio.onended = null;
                         audio.play().catch(() => {});
@@ -333,6 +336,7 @@ async function submitAnswer(selectedIndex, questionData) {
         // Next button
         const nextBtn = document.getElementById('btn-next');
         nextBtn.onclick = async () => {
+            stopAllAudio();
             if (result.session_complete) {
                 showSummary(result.summary);
             } else {
