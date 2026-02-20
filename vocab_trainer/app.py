@@ -112,8 +112,10 @@ async def _generate_in_background(count: int):
         _bg_log.warning("Background generation failed: %s", e)
     finally:
         _bg_generating = False
-        # Re-check: more archiving may have happened during generation
-        await _ensure_question_buffer()
+        try:
+            await _ensure_question_buffer()
+        except Exception:
+            pass  # DB may be closed during shutdown
 
 
 _pregen_log = logging.getLogger("vocab_trainer.pregen")
