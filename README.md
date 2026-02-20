@@ -183,4 +183,4 @@ uv run --extra all python -m pytest tests/ -v
 
 ## License
 
-[MIT](LICENSE)
+[AGPL-3.0](LICENSE) — You're free to use, modify, and distribute this software, but any derivative work (including hosting it as a network service) must be released under the same license with source code available.
