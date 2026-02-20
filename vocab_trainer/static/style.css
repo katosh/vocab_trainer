@@ -603,6 +603,44 @@ nav {
     cursor: pointer;
 }
 
+.thinking-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px 4px 8px;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+}
+
+.thinking-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.thinking-toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+    margin: 0;
+    cursor: pointer;
+}
+
+.chat-thinking {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    font-style: italic;
+    animation: thinking-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
 .complexity-selector {
     display: flex;
     gap: 2px;

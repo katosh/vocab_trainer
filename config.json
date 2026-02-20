@@ -10,6 +10,7 @@
     "db_path": "progress.db",
     "ollama_url": "http://localhost:11434",
     "min_ready_questions": 3,
-    "max_active_words": 63,
-    "archive_interval_days": 21
+    "max_active_words": 64,
+    "archive_interval_days": 21,
+    "llm_thinking": false
 }

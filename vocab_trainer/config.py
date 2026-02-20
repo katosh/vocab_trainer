@@ -20,6 +20,7 @@ DEFAULTS = {
     "min_ready_questions": 3,
     "max_active_words": 20,
     "archive_interval_days": 21,
+    "llm_thinking": False,
 }
 
 
@@ -38,6 +39,7 @@ class Settings:
     min_ready_questions: int = DEFAULTS["min_ready_questions"]
     max_active_words: int = DEFAULTS["max_active_words"]
     archive_interval_days: int = DEFAULTS["archive_interval_days"]
+    llm_thinking: bool = DEFAULTS["llm_thinking"]
 
     @property
     def project_root(self) -> Path:
@@ -76,6 +78,7 @@ class Settings:
             "min_ready_questions": self.min_ready_questions,
             "max_active_words": self.max_active_words,
             "archive_interval_days": self.archive_interval_days,
+            "llm_thinking": self.llm_thinking,
         }
 
 

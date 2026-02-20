@@ -7,14 +7,14 @@ from pathlib import Path
 
 class LLMProvider(ABC):
     @abstractmethod
-    async def generate(self, prompt: str, temperature: float = 0.7) -> str:
+    async def generate(self, prompt: str, temperature: float = 0.7, thinking: bool = True) -> str:
         ...
 
     async def generate_stream(
-        self, prompt: str, temperature: float = 0.7, system: str | None = None
+        self, prompt: str, temperature: float = 0.7, system: str | None = None, thinking: bool = True
     ) -> AsyncIterator[str]:
         """Stream response tokens. Default: yield full response at once."""
-        result = await self.generate(prompt, temperature)
+        result = await self.generate(prompt, temperature, thinking=thinking)
         yield result
 
     @abstractmethod

@@ -23,7 +23,7 @@ class TestSettings:
         assert d["elevenlabs_model"] == "eleven_flash_v2_5"
         assert "elevenlabs_voice_id" not in d
         assert isinstance(d["vocab_files"], list)
-        assert len(d) == 13  # all fields present
+        assert len(d) == 14  # all fields present
 
     def test_to_dict_roundtrip(self):
         s = Settings(llm_provider="anthropic", session_size=30)

@@ -17,7 +17,7 @@ class OllamaProvider(LLMProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
 
-    async def generate(self, prompt: str, temperature: float = 0.7) -> str:
+    async def generate(self, prompt: str, temperature: float = 0.7, thinking: bool = True) -> str:
         log.info("── PROMPT (%s) ──\n%s", self.model, prompt)
         t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -28,6 +28,7 @@ class OllamaProvider(LLMProvider):
                     "prompt": prompt,
                     "temperature": temperature,
                     "stream": False,
+                    "think": thinking,
                 },
             )
             resp.raise_for_status()
@@ -39,7 +40,7 @@ class OllamaProvider(LLMProvider):
         return response
 
     async def generate_stream(
-        self, prompt: str, temperature: float = 0.7, system: str | None = None
+        self, prompt: str, temperature: float = 0.7, system: str | None = None, thinking: bool = True
     ) -> AsyncIterator[str]:
         """Stream tokens from Ollama, stripping <think>...</think> blocks."""
         log.info("── STREAM PROMPT (%s) ──\n%s", self.model, prompt)
@@ -54,6 +55,7 @@ class OllamaProvider(LLMProvider):
             "prompt": prompt,
             "temperature": temperature,
             "stream": True,
+            "think": thinking,
         }
         if system:
             body["system"] = system

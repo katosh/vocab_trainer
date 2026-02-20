@@ -13,7 +13,7 @@ class AnthropicProvider(LLMProvider):
         )
         self.model = model
 
-    async def generate(self, prompt: str, temperature: float = 0.7) -> str:
+    async def generate(self, prompt: str, temperature: float = 0.7, thinking: bool = True) -> str:
         message = await self.client.messages.create(
             model=self.model,
             max_tokens=1024,

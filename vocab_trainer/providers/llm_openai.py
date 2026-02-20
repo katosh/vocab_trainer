@@ -13,7 +13,7 @@ class OpenAIProvider(LLMProvider):
         )
         self.model = model
 
-    async def generate(self, prompt: str, temperature: float = 0.7) -> str:
+    async def generate(self, prompt: str, temperature: float = 0.7, thinking: bool = True) -> str:
         resp = await self.client.chat.completions.create(
             model=self.model,
             temperature=temperature,

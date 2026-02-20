@@ -9,6 +9,7 @@ let chatStreaming = false;
 let activeAudioElements = [];  // all playing/playable audio to stop on navigation
 let pendingAudioTimeout = null;
 let autoCompareEnabled = localStorage.getItem('autoCompare') === 'true';
+let thinkingEnabled = localStorage.getItem('llmThinking') === 'true';
 let narrationQueue = null;
 
 // ── Stick-to-bottom auto-scroll ─────────────────────────────────────────
@@ -610,8 +611,10 @@ const CHAT_PROMPTS = {
         'Show me 3 sentences using "{word}" in literary or sophisticated contexts. Show the word at its most expressive.',
     etymology:
         'Explain the etymology and deeper meaning of "{word}". Include its roots (Latin, Greek, etc.), how the meaning evolved, and any interesting historical context.',
-    compare:
-        'The sentence was: "{stem}"\nI chose "{chosen}" — {result}.\n\nCompare all four choices ({choices}). For each word, explain what it means, when you\'d use it vs the others, and give 2 example sentences. Write in flowing conversational prose — no tables, no bullet points, no numbered lists.',
+    compare_correct:
+        'Compare all four choices. For each word, explain what it means, when you\'d use it vs the others, and give a couple of example sentences.',
+    compare_wrong:
+        'Compare all four choices. Start by contrasting "{chosen}" with "{correct}" — why doesn\'t my choice work here and what makes the correct answer fit? Then cover the other two.',
 };
 
 let selectedComplexity = localStorage.getItem('contextLevel') || 'simple';
@@ -638,14 +641,14 @@ document.querySelectorAll('.chat-btn').forEach(btn => {
         if (action === 'compare') {
             const ctx = currentQuestionContext;
             const chosen = ctx.choices[ctx.selected_index];
-            const resultText = ctx.was_correct
-                ? 'correct'
-                : `wrong, the answer was "${ctx.correct_word}"`;
-            const message = CHAT_PROMPTS.compare
-                .replace('{stem}', ctx.stem)
-                .replace('{chosen}', chosen)
-                .replace('{result}', resultText)
-                .replace('{choices}', ctx.choices.join(', '));
+            let message;
+            if (ctx.was_correct) {
+                message = CHAT_PROMPTS.compare_correct;
+            } else {
+                message = CHAT_PROMPTS.compare_wrong
+                    .replace('{chosen}', chosen)
+                    .replace('{correct}', ctx.correct_word);
+            }
             sendChatMessage(message);
         }
     });
@@ -656,6 +659,15 @@ const autoCompareCheckbox = document.getElementById('auto-compare-toggle');
 autoCompareCheckbox.checked = autoCompareEnabled;
 autoCompareCheckbox.addEventListener('change', () => {
     setAutoCompare(autoCompareCheckbox.checked);
+});
+
+// Thinking toggle
+const thinkingCheckbox = document.getElementById('thinking-toggle');
+thinkingCheckbox.checked = thinkingEnabled;
+thinkingCheckbox.addEventListener('change', () => {
+    thinkingEnabled = thinkingCheckbox.checked;
+    localStorage.setItem('llmThinking', thinkingEnabled);
+    api('/api/settings', 'PUT', { llm_thinking: thinkingEnabled }).catch(() => {});
 });
 
 // Per-word action buttons (delegated from choice-details container)
@@ -924,7 +936,11 @@ async function sendChatMessage(message) {
     const assistantEl = appendChatMessage('assistant', '');
     assistantEl.classList.add('streaming');
 
-    let fullResponse = '';
+    // The backend pre-fills "**" after "Tutor:" on the first message to
+    // force a substantive bold-word opening.  The model continues from
+    // that prefix, so we prepend it here to keep the markdown valid.
+    const prefill = chatHistory.length === 0 ? '**' : '';
+    let fullResponse = prefill;
 
     try {
         const resp = await fetch(API + '/api/chat', {
@@ -934,11 +950,13 @@ async function sendChatMessage(message) {
                 message,
                 context: currentQuestionContext,
                 history: chatHistory,
+                thinking: thinkingEnabled,
             }),
         });
 
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
+        let thinkingIndicator = null;
 
         while (true) {
             const { value, done } = await reader.read();
@@ -949,12 +967,30 @@ async function sendChatMessage(message) {
                 if (!line.startsWith('data: ')) continue;
                 try {
                     const data = JSON.parse(line.slice(6));
+                    if (data.thinking === true) {
+                        thinkingIndicator = document.createElement('span');
+                        thinkingIndicator.className = 'chat-thinking';
+                        thinkingIndicator.textContent = 'Thinking...';
+                        assistantEl.appendChild(thinkingIndicator);
+                    }
+                    if (data.thinking === false && thinkingIndicator) {
+                        thinkingIndicator.remove();
+                        thinkingIndicator = null;
+                    }
                     if (data.token) {
+                        if (thinkingIndicator) {
+                            thinkingIndicator.remove();
+                            thinkingIndicator = null;
+                        }
                         fullResponse += data.token;
                         if (autoNarrating && narrationQueue) narrationQueue.feedToken(data.token);
                         assistantEl.innerHTML = simpleMarkdown(fullResponse);
                     }
                     if (data.error) {
+                        if (thinkingIndicator) {
+                            thinkingIndicator.remove();
+                            thinkingIndicator = null;
+                        }
                         fullResponse += `\n[Error: ${data.error}]`;
                         assistantEl.innerHTML = simpleMarkdown(fullResponse);
                     }
@@ -1310,3 +1346,12 @@ function showMessage(elementId, text, type) {
 
 chatScroll.init();
 refreshStats();
+
+// Sync thinking toggle from backend settings
+api('/api/settings').then(s => {
+    if (typeof s.llm_thinking === 'boolean') {
+        thinkingEnabled = s.llm_thinking;
+        localStorage.setItem('llmThinking', thinkingEnabled);
+        document.getElementById('thinking-toggle').checked = thinkingEnabled;
+    }
+}).catch(() => {});

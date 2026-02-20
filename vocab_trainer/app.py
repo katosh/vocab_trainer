@@ -765,78 +765,94 @@ async def api_update_settings(request: Request):
 
 # ── API: Chat (LLM tutor) ───────────────────────────────────────────────
 
-def _build_chat_prompt(context: dict, history: list[dict], message: str) -> tuple[str, str]:
-    """Build a system message and conversation prompt for the chat LLM call.
+def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
+    """Build a single prompt for the chat LLM call.
 
-    Returns (system, prompt) — system carries the role, context, and
-    guidelines; prompt carries the conversation history and student message.
+    First message (empty history): a rich preamble with full quiz context,
+    word definitions, and output expectations — primes the model so
+    thoroughly it doesn't need chain-of-thought reasoning.
+
+    Follow-up messages: just the conversation history as Student/Tutor
+    turns plus the new message. No preamble repetition.
     """
-    # ── System message ──
-    sys_lines = [
-        "You are a vocabulary tutor helping a student master precise English word usage.",
-        "The student just answered a quiz question. Here is the full context:",
-        "",
-        f"Question type: {context.get('question_type', 'fill_blank')}",
-    ]
-    if context.get("cluster_title"):
-        sys_lines.append(f"Word cluster: {context['cluster_title']}")
-    sys_lines.append(f"Question: {context.get('stem', '')}")
+    if history:
+        # Follow-up: compact history + new message
+        lines: list[str] = []
+        for msg in history:
+            role = "Student" if msg["role"] == "user" else "Tutor"
+            lines.append(f"{role}: {msg['content']}")
+            lines.append("")
+        lines.append(f"Student: {message}")
+        lines.append("")
+        lines.append("Tutor:")
+        return "\n".join(lines)
 
+    # First message: rich preamble with full context
+    q_type = context.get("question_type", "fill_blank")
+    type_labels = {
+        "fill_blank": "fill-in-the-blank",
+        "best_fit": "best-fit",
+        "distinction": "distinction",
+    }
+    stem = context.get("stem", "")
     choices = context.get("choices", [])
-    if choices:
-        labels = ["A", "B", "C", "D"]
-        sys_lines.append(
-            "Choices: "
-            + ", ".join(f"{labels[i]}) {c}" for i, c in enumerate(choices))
-        )
-
-    sys_lines.append(f"Correct answer: {context.get('correct_word', '')}")
-
+    correct_word = context.get("correct_word", "")
+    explanation = context.get("explanation", "")
+    context_sentence = context.get("context_sentence", "")
+    cluster_title = context.get("cluster_title", "")
     selected_idx = context.get("selected_index")
     was_correct = context.get("was_correct")
-    if selected_idx is not None and choices:
-        chosen = choices[selected_idx] if selected_idx < len(choices) else "?"
-        if was_correct:
-            sys_lines.append(f"Student chose: {chosen} (correct)")
-        else:
-            sys_lines.append(f"Student chose: {chosen} (wrong)")
-
-    sys_lines.append(f"Explanation: {context.get('explanation', '')}")
-    sys_lines.append(f"Context sentence: {context.get('context_sentence', '')}")
-
     details = context.get("choice_details", [])
-    if details:
-        sys_lines.append("")
-        sys_lines.append("Word meanings in this cluster:")
-        for d in details:
-            if d.get("meaning"):
-                line = f"- {d['word']}: {d['meaning']}"
-                if d.get("distinction"):
-                    line += f" ({d['distinction']})"
-                sys_lines.append(line)
 
-    sys_lines.append("")
-    sys_lines.append("Be concise and educational. Focus on nuances between near-synonyms.")
-    sys_lines.append("Use concrete example sentences to illustrate.")
-    if was_correct is False:
-        sys_lines.append("The student got this wrong. Address why their choice was incorrect and clarify the distinction they missed.")
-    elif was_correct is True:
-        sys_lines.append("The student answered correctly. Skip praise and get straight to the substance.")
+    labels = ["A", "B", "C", "D"]
+    choices_str = ", ".join(f"{labels[i]}) {c}" for i, c in enumerate(choices))
+    chosen = choices[selected_idx] if selected_idx is not None and selected_idx < len(choices) else "?"
 
-    system = "\n".join(sys_lines)
+    # Build word definitions block
+    defs_lines = []
+    for d in details:
+        if d.get("meaning"):
+            line = f"  - {d['word']}: {d['meaning']}"
+            if d.get("distinction"):
+                line += f" — {d['distinction']}"
+            defs_lines.append(line)
+    defs_block = "\n".join(defs_lines) if defs_lines else ""
 
-    # ── Conversation prompt ──
-    conv_lines: list[str] = []
-    for msg in history:
-        role = "Student" if msg["role"] == "user" else "Tutor"
-        conv_lines.append(f"{role}: {msg['content']}")
-        conv_lines.append("")
+    if was_correct:
+        outcome = f'The student chose "{chosen}" — correct.'
+        task = f"Deepen their understanding of why **{correct_word}** fits and how it differs from the alternatives."
+    else:
+        outcome = f'The student chose "{chosen}" — wrong. The correct answer is "{correct_word}".'
+        task = f"Clarify why **{chosen}** doesn't fit and what makes **{correct_word}** the right choice. Then illuminate the broader distinctions."
 
-    conv_lines.append(f"Student: {message}")
-    conv_lines.append("")
-    conv_lines.append("Tutor:")
+    preamble = f"""You are a vocabulary tutor. Your mission is to teach impeccable vocabulary use — the student should walk away knowing not just what each word means, but exactly when to reach for it instead of its near-synonyms, what collocations it naturally forms, and where substituting a close alternative would sound wrong to a native ear.
 
-    return system, "\n".join(conv_lines)
+Your first sentence always delivers substance — a specific semantic distinction, an etymological root, a revealing collocational pattern. You write in flowing prose with **bold** highlights and example sentences woven in naturally. No lists, no tables.
+
+Here is an example of the quality of insight you produce:
+"**Beatific** and **blissful** both describe profound happiness, but they diverge in register and reach. **Beatific** carries a specifically religious resonance — from Latin *beatus* (blessed) — and implies serene, transcendent joy: you'd write 'a beatific smile' but never 'beatific ignorance.' **Blissful** works in secular contexts and pairs naturally with unawareness — 'blissful ignorance,' 'blissful sleep' — a happiness that's felt rather than radiated outward. **Elated** moves into a different register entirely: it's active, momentary, tied to a specific occasion, where the other two describe sustained states."
+
+Context for this question:
+{type_labels.get(q_type, q_type)} quiz{" — cluster: " + cluster_title if cluster_title else ""}
+Stem: {stem}
+Choices: {choices_str}
+{outcome}
+Explanation: {explanation}
+Context sentence: {context_sentence}
+"""
+
+    if defs_block:
+        preamble += f"""Word definitions:
+{defs_block}
+"""
+
+    preamble += f"""{task}
+
+Student: {message}
+
+Tutor: **"""
+
+    return preamble
 
 
 @app.post("/api/chat")
@@ -845,11 +861,12 @@ async def api_chat(request: Request):
     message = body.get("message", "")
     context = body.get("context", {})
     history = body.get("history", [])
+    thinking = body.get("thinking", False)
 
     if not message:
         raise HTTPException(400, "No message provided")
 
-    system, prompt = _build_chat_prompt(context, history, message)
+    prompt = _build_chat_prompt(context, history, message)
     llm = _get_llm()
 
     # Cancel in-flight background LLM tasks to free the GPU immediately
@@ -864,7 +881,13 @@ async def api_chat(request: Request):
 
     async def stream():
         try:
-            async for token in llm.generate_stream(prompt, temperature=0.7, system=system):
+            first_token = True
+            if thinking:
+                yield f"data: {json.dumps({'thinking': True})}\n\n"
+            async for token in llm.generate_stream(prompt, temperature=0.7, thinking=thinking):
+                if first_token and thinking:
+                    yield f"data: {json.dumps({'thinking': False})}\n\n"
+                    first_token = False
                 yield f"data: {json.dumps({'token': token})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
