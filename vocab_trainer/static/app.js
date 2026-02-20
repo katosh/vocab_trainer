@@ -1134,13 +1134,92 @@ function renderLibraryPanel(containerId, questions, isArchived) {
 
 // ── Settings ─────────────────────────────────────────────────────────────
 
+const TTS_VOICES = {
+    'edge-tts': [
+        { id: 'en-US-GuyNeural', label: 'Guy (Male, US)' },
+        { id: 'en-US-AriaNeural', label: 'Aria (Female, US)' },
+        { id: 'en-US-JennyNeural', label: 'Jenny (Female, US)' },
+        { id: 'en-US-AndrewNeural', label: 'Andrew (Male, US)' },
+        { id: 'en-US-AvaNeural', label: 'Ava (Female, US)' },
+        { id: 'en-GB-RyanNeural', label: 'Ryan (Male, British)' },
+        { id: 'en-GB-SoniaNeural', label: 'Sonia (Female, British)' },
+    ],
+    'elevenlabs': [
+        { id: '21m00Tcm4TlvDq8ikWAM', label: 'Rachel' },
+        { id: 'pNInz6obpgDQGcFmaJgB', label: 'Adam' },
+        { id: 'nPczCjzI2devNBz1zQrb', label: 'Brian' },
+        { id: 'TxGEqnHWrfWFTfGW9XjX', label: 'Josh' },
+        { id: 'onwK4e9ZLuTAKqWW03F9', label: 'Daniel' },
+        { id: 'Xb7hH8MSUJpSbSDYk0k2', label: 'Alice' },
+        { id: 'XrExE9yKIg1WjnnlVkGX', label: 'Matilda' },
+    ],
+    'piper': [
+        { id: 'en_US-lessac-medium', label: 'lessac-medium' },
+        { id: 'en_US-lessac-high', label: 'lessac-high' },
+        { id: 'en_US-ryan-medium', label: 'ryan-medium' },
+        { id: 'en_US-ryan-high', label: 'ryan-high' },
+        { id: 'en_US-amy-medium', label: 'amy-medium' },
+        { id: 'en_US-cori-medium', label: 'cori-medium' },
+    ],
+};
+
+const TTS_HINTS = {
+    'edge-tts': 'Free Microsoft Edge voices. Full list: edge-tts --list-voices',
+    'elevenlabs': 'Requires ELEVEN_LABS_API_KEY env var. Voice IDs from elevenlabs.io',
+    'piper': 'Offline TTS. Model names from github.com/rhasspy/piper',
+};
+
+function populateVoiceDropdown(provider, currentVoiceId) {
+    const select = document.getElementById('set-tts-voice-select');
+    const custom = document.getElementById('set-tts-voice-custom');
+    const hint = document.getElementById('tts-voice-hint');
+    const modelGroup = document.getElementById('elevenlabs-model-group');
+
+    const voices = TTS_VOICES[provider] || [];
+    select.innerHTML = '';
+    voices.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = v.label;
+        select.appendChild(opt);
+    });
+    // Add "Other" option
+    const otherOpt = document.createElement('option');
+    otherOpt.value = '__other__';
+    otherOpt.textContent = 'Other (custom ID)';
+    select.appendChild(otherOpt);
+
+    // Select current voice or fall back to "Other"
+    const match = voices.find(v => v.id === currentVoiceId);
+    if (match) {
+        select.value = match.id;
+        custom.classList.add('hidden');
+    } else {
+        select.value = '__other__';
+        custom.value = currentVoiceId || '';
+        custom.classList.remove('hidden');
+    }
+
+    hint.textContent = TTS_HINTS[provider] || '';
+    modelGroup.classList.toggle('hidden', provider !== 'elevenlabs');
+}
+
+function getSelectedVoice() {
+    const select = document.getElementById('set-tts-voice-select');
+    if (select.value === '__other__') {
+        return document.getElementById('set-tts-voice-custom').value.trim() || select.options[0].value;
+    }
+    return select.value;
+}
+
 async function loadSettings() {
     try {
         const s = await api('/api/settings');
         document.getElementById('set-llm').value = s.llm_provider;
         document.getElementById('set-llm-model').value = s.llm_model;
         document.getElementById('set-tts').value = s.tts_provider;
-        document.getElementById('set-tts-voice').value = s.tts_voice;
+        populateVoiceDropdown(s.tts_provider, s.tts_voice);
+        document.getElementById('set-elevenlabs-model').value = s.elevenlabs_model || 'eleven_flash_v2_5';
         document.getElementById('set-session-size').value = s.session_size;
         document.getElementById('set-session-size-val').textContent = s.session_size;
         document.getElementById('set-min-ready').value = s.min_ready_questions;
@@ -1170,6 +1249,19 @@ document.getElementById('set-archive-interval').addEventListener('input', (e) =>
     document.getElementById('set-archive-interval-val').textContent = e.target.value;
 });
 
+document.getElementById('set-tts').addEventListener('change', (e) => {
+    const provider = e.target.value;
+    const voices = TTS_VOICES[provider] || [];
+    const defaultVoice = voices.length > 0 ? voices[0].id : '';
+    populateVoiceDropdown(provider, defaultVoice);
+});
+
+document.getElementById('set-tts-voice-select').addEventListener('change', (e) => {
+    const custom = document.getElementById('set-tts-voice-custom');
+    custom.classList.toggle('hidden', e.target.value !== '__other__');
+    if (e.target.value === '__other__') custom.focus();
+});
+
 document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
@@ -1177,7 +1269,8 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
             llm_provider: document.getElementById('set-llm').value,
             llm_model: document.getElementById('set-llm-model').value,
             tts_provider: document.getElementById('set-tts').value,
-            tts_voice: document.getElementById('set-tts-voice').value,
+            tts_voice: getSelectedVoice(),
+            elevenlabs_model: document.getElementById('set-elevenlabs-model').value,
             session_size: parseInt(document.getElementById('set-session-size').value),
             min_ready_questions: parseInt(document.getElementById('set-min-ready').value),
             max_active_words: parseInt(document.getElementById('set-max-active').value),

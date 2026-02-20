@@ -11,7 +11,7 @@ DEFAULTS = {
     "llm_model": "qwen3:8b",
     "tts_provider": "edge-tts",
     "tts_voice": "en-US-GuyNeural",
-    "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
+    "elevenlabs_model": "eleven_flash_v2_5",
     "session_size": 20,
     "vocab_files": [],
     "audio_cache_dir": "audio_cache",
@@ -29,7 +29,7 @@ class Settings:
     llm_model: str = DEFAULTS["llm_model"]
     tts_provider: str = DEFAULTS["tts_provider"]
     tts_voice: str = DEFAULTS["tts_voice"]
-    elevenlabs_voice_id: str = DEFAULTS["elevenlabs_voice_id"]
+    elevenlabs_model: str = DEFAULTS["elevenlabs_model"]
     session_size: int = DEFAULTS["session_size"]
     vocab_files: list[str] = field(default_factory=lambda: list(DEFAULTS["vocab_files"]))
     audio_cache_dir: str = DEFAULTS["audio_cache_dir"]
@@ -67,7 +67,7 @@ class Settings:
             "llm_model": self.llm_model,
             "tts_provider": self.tts_provider,
             "tts_voice": self.tts_voice,
-            "elevenlabs_voice_id": self.elevenlabs_voice_id,
+            "elevenlabs_model": self.elevenlabs_model,
             "session_size": self.session_size,
             "vocab_files": self.vocab_files,
             "audio_cache_dir": self.audio_cache_dir,
@@ -82,6 +82,11 @@ class Settings:
 def load_settings() -> Settings:
     if CONFIG_PATH.exists():
         raw = json.loads(CONFIG_PATH.read_text())
+        # Migrate: elevenlabs_voice_id -> tts_voice (if ElevenLabs active)
+        if "elevenlabs_voice_id" in raw:
+            if raw.get("tts_provider") == "elevenlabs":
+                raw.setdefault("tts_voice", raw["elevenlabs_voice_id"])
+            del raw["elevenlabs_voice_id"]
         known = {f.name for f in Settings.__dataclass_fields__.values()}
         filtered = {k: v for k, v in raw.items() if k in known}
         return Settings(**filtered)

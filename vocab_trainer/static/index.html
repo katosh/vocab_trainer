@@ -206,8 +206,21 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="set-tts-voice">TTS Voice</label>
-                    <input id="set-tts-voice" type="text" value="en-US-GuyNeural" autocomplete="off" data-1p-ignore>
+                    <label for="set-tts-voice-select">TTS Voice</label>
+                    <select id="set-tts-voice-select"></select>
+                    <input id="set-tts-voice-custom" type="text" placeholder="Enter voice ID..." autocomplete="off" data-1p-ignore class="hidden">
+                    <small id="tts-voice-hint" class="form-hint"></small>
+                </div>
+                <div class="form-group hidden" id="elevenlabs-model-group">
+                    <label for="set-elevenlabs-model">ElevenLabs Model</label>
+                    <select id="set-elevenlabs-model">
+                        <option value="eleven_flash_v2_5">Flash v2.5 (fastest, cheapest)</option>
+                        <option value="eleven_flash_v2">Flash v2</option>
+                        <option value="eleven_multilingual_v2">Multilingual v2</option>
+                        <option value="eleven_turbo_v2_5">Turbo v2.5</option>
+                        <option value="eleven_turbo_v2">Turbo v2</option>
+                        <option value="eleven_v3">v3 (highest quality)</option>
+                    </select>
                 </div>
                 <div class="form-group">
                     <label for="set-session-size">Session Size</label>

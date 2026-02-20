@@ -62,10 +62,10 @@ def _get_tts():
         return EdgeTTSProvider(voice=s.tts_voice)
     elif s.tts_provider == "elevenlabs":
         from vocab_trainer.providers.tts_elevenlabs import ElevenLabsProvider
-        return ElevenLabsProvider(voice_id=s.elevenlabs_voice_id)
+        return ElevenLabsProvider(voice_id=s.tts_voice, model_id=s.elevenlabs_model)
     elif s.tts_provider == "piper":
         from vocab_trainer.providers.tts_piper import PiperTTSProvider
-        return PiperTTSProvider()
+        return PiperTTSProvider(model=s.tts_voice)
     raise ValueError(f"Unknown TTS provider: {s.tts_provider}")
 
 

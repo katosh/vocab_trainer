@@ -884,6 +884,10 @@ nav {
     text-align: left;
 }
 
+#set-tts-voice-custom {
+    margin-top: 8px;
+}
+
 /* Library */
 .library-tabs {
     display: flex;

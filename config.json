@@ -2,14 +2,14 @@
     "llm_provider": "ollama",
     "llm_model": "qwen3:8b",
     "tts_provider": "edge-tts",
-    "tts_voice": "en-US-GuyNeural",
-    "elevenlabs_voice_id": "lfBVYbXnblkOddWFfEIg",
+    "tts_voice": "en-US-AndrewNeural",
+    "elevenlabs_model": "eleven_flash_v2_5",
     "session_size": 20,
     "vocab_files": [],
     "audio_cache_dir": "audio_cache",
     "db_path": "progress.db",
     "ollama_url": "http://localhost:11434",
     "min_ready_questions": 3,
-    "max_active_words": 60,
+    "max_active_words": 63,
     "archive_interval_days": 21
 }

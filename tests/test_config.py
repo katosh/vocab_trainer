@@ -20,6 +20,8 @@ class TestSettings:
         s = Settings()
         d = s.to_dict()
         assert d["llm_provider"] == "ollama"
+        assert d["elevenlabs_model"] == "eleven_flash_v2_5"
+        assert "elevenlabs_voice_id" not in d
         assert isinstance(d["vocab_files"], list)
         assert len(d) == 13  # all fields present
 
@@ -75,3 +77,31 @@ class TestLoadSaveSettings:
             s = load_settings()
         assert s.llm_provider == "ollama"
         assert not hasattr(s, "unknown_key")
+
+    def test_migrate_elevenlabs_voice_id(self, tmp_path):
+        """Old elevenlabs_voice_id should migrate to tts_voice when provider is elevenlabs."""
+        config = {
+            "tts_provider": "elevenlabs",
+            "elevenlabs_voice_id": "custom_voice_123",
+        }
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(config))
+
+        with patch("vocab_trainer.config.CONFIG_PATH", config_path):
+            s = load_settings()
+        assert s.tts_voice == "custom_voice_123"
+        assert not hasattr(s, "elevenlabs_voice_id") or "elevenlabs_voice_id" not in s.to_dict()
+
+    def test_migrate_elevenlabs_voice_id_non_elevenlabs(self, tmp_path):
+        """Old elevenlabs_voice_id should NOT override tts_voice when provider is not elevenlabs."""
+        config = {
+            "tts_provider": "edge-tts",
+            "tts_voice": "en-US-GuyNeural",
+            "elevenlabs_voice_id": "custom_voice_123",
+        }
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(config))
+
+        with patch("vocab_trainer.config.CONFIG_PATH", config_path):
+            s = load_settings()
+        assert s.tts_voice == "en-US-GuyNeural"
