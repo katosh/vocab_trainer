@@ -18,7 +18,6 @@ DEFAULTS = {
     "db_path": "progress.db",
     "ollama_url": "http://localhost:11434",
     "min_ready_questions": 3,
-    "max_active_words": 20,
     "archive_interval_days": 21,
     "llm_thinking": False,
 }
@@ -37,7 +36,6 @@ class Settings:
     db_path: str = DEFAULTS["db_path"]
     ollama_url: str = DEFAULTS["ollama_url"]
     min_ready_questions: int = DEFAULTS["min_ready_questions"]
-    max_active_words: int = DEFAULTS["max_active_words"]
     archive_interval_days: int = DEFAULTS["archive_interval_days"]
     llm_thinking: bool = DEFAULTS["llm_thinking"]
 
@@ -76,7 +74,6 @@ class Settings:
             "db_path": self.db_path,
             "ollama_url": self.ollama_url,
             "min_ready_questions": self.min_ready_questions,
-            "max_active_words": self.max_active_words,
             "archive_interval_days": self.archive_interval_days,
             "llm_thinking": self.llm_thinking,
         }

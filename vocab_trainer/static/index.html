@@ -53,21 +53,6 @@
                 <button id="btn-generate" class="btn-secondary">Generate Questions</button>
             </div>
 
-            <!-- Session gate panel (shown when active words cap blocks new words) -->
-            <div id="session-gate" class="session-gate hidden">
-                <p id="gate-summary" class="gate-summary"></p>
-                <div class="gate-slider-row">
-                    <label for="gate-slider">Max Active Words</label>
-                    <input type="range" id="gate-slider" min="0" max="100" value="20">
-                    <span id="gate-slider-val">20</span>
-                </div>
-                <p id="gate-result" class="gate-result"></p>
-                <div class="gate-actions">
-                    <button id="gate-start" class="btn-primary">Start Session</button>
-                    <button id="gate-cancel" class="btn-secondary">Cancel</button>
-                </div>
-            </div>
-
             <div id="dashboard-message" class="message hidden"></div>
         </section>
 
@@ -144,7 +129,10 @@
                         </div>
                     </div>
 
-                    <button id="btn-next" class="btn-primary">Next Question</button>
+                    <div class="session-action-buttons">
+                        <button id="btn-next" class="btn-primary">Next Question</button>
+                        <button id="btn-finish" class="btn-secondary hidden">Finish Session</button>
+                    </div>
                 </div>
             </div>
 
@@ -236,12 +224,6 @@
                     <label for="set-min-ready">Min Ready Questions (auto-generate buffer)</label>
                     <input id="set-min-ready" type="range" min="0" max="20" value="3">
                     <span id="set-min-ready-val">3</span>
-                </div>
-                <div class="form-group">
-                    <label for="set-max-active">Max Active Words</label>
-                    <input id="set-max-active" type="range" min="5" max="100" value="20">
-                    <span id="set-max-active-val">20</span>
-                    <small class="form-hint">Stop introducing new words when this many are in rotation</small>
                 </div>
                 <div class="form-group">
                     <label for="set-archive-interval">Archive Interval (days)</label>

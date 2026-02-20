@@ -1,9 +1,12 @@
 """Tests for the SM-2 spaced repetition module."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from vocab_trainer.srs import (
+    OVERDUE_DAMPENING,
     quality_from_answer,
     record_review,
     select_session_words,
@@ -127,6 +130,46 @@ class TestRecordReview:
         r = populated_db.get_review("concise")
         assert r["repetitions"] == 0
         assert r["interval_days"] == 1.0
+
+    def test_overdue_correct_gets_credit(self, populated_db):
+        """A correct answer on an overdue word should produce a longer interval
+        than the same answer on a word reviewed exactly on time."""
+        # Set up a review that was due 10 days ago with interval=6
+        ten_days_ago = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        populated_db.upsert_review("concise", 2.5, 6.0, 2, ten_days_ago, True)
+
+        record_review(populated_db, "concise", quality=4)
+        overdue_review = populated_db.get_review("concise")
+
+        # Set up a fresh review for another word, due right now, same interval
+        now = datetime.now(timezone.utc).isoformat()
+        populated_db.upsert_review("terse", 2.5, 6.0, 2, now, True)
+        record_review(populated_db, "terse", quality=4)
+        ontime_review = populated_db.get_review("terse")
+
+        # Overdue word should get a longer interval (effective_interval = 6 + 10*0.5 = 11)
+        assert overdue_review["interval_days"] > ontime_review["interval_days"]
+
+    def test_overdue_wrong_no_credit(self, populated_db):
+        """A wrong answer on an overdue word should still reset to 1 day."""
+        ten_days_ago = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        populated_db.upsert_review("concise", 2.5, 6.0, 2, ten_days_ago, True)
+
+        record_review(populated_db, "concise", quality=1)
+        r = populated_db.get_review("concise")
+        assert r["interval_days"] == 1.0
+        assert r["repetitions"] == 0
+
+    def test_not_overdue_no_credit(self, populated_db):
+        """A word that is not overdue should not get extra credit."""
+        tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+        populated_db.upsert_review("concise", 2.5, 6.0, 2, tomorrow, True)
+
+        record_review(populated_db, "concise", quality=4)
+        r = populated_db.get_review("concise")
+        # Normal SM-2: interval = 6.0 * new_ef (should be around 14.4)
+        # Should not get overdue boost since word is not yet due
+        assert r["interval_days"] == pytest.approx(6.0 * r["easiness_factor"], rel=0.01)
 
 
 class TestSelectSessionWords:

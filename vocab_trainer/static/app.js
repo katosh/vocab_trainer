@@ -149,8 +149,7 @@ async function refreshStats() {
         document.getElementById('stat-reviewed').textContent = stats.words_reviewed;
         document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
         document.getElementById('stat-sessions').textContent = stats.total_sessions;
-        document.getElementById('stat-active').textContent =
-            stats.active_words + ' / ' + stats.max_active_words;
+        document.getElementById('stat-active').textContent = stats.active_words;
     } catch (e) {
         console.error('Failed to load stats:', e);
     }
@@ -204,81 +203,7 @@ async function generateQuestions() {
 // ── Quiz Session ─────────────────────────────────────────────────────────
 
 async function startSession() {
-    const btn = document.getElementById('btn-start-session');
-    btn.disabled = true;
-    btn.textContent = 'Checking...';
-
-    try {
-        const preview = await api('/api/session/preview');
-        if (preview.needs_gate) {
-            btn.disabled = false;
-            btn.textContent = 'Start Session';
-            showSessionGate(preview);
-            return;
-        }
-        btn.disabled = false;
-        btn.textContent = 'Start Session';
-        await doStartSession();
-    } catch (e) {
-        btn.disabled = false;
-        btn.textContent = 'Start Session';
-        showMessage('dashboard-message', 'Failed to start session: ' + e.message, 'error');
-    }
-}
-
-function showSessionGate(preview) {
-    const gate = document.getElementById('session-gate');
-    gate.classList.remove('hidden');
-
-    // Summary
-    const parts = [];
-    if (preview.review_count > 0) parts.push(preview.review_count + ' review');
-    if (preview.reinforcement_count > 0) parts.push(preview.reinforcement_count + ' reinforcement');
-    if (preview.new_word_count > 0) parts.push(preview.new_word_count + ' new');
-    const breakdown = parts.length > 0 ? ' (' + parts.join(', ') + ')' : '';
-    document.getElementById('gate-summary').textContent =
-        preview.ready_total + ' of ' + preview.session_size + ' questions ready' + breakdown +
-        '. Increase the Active Words cap to add new words.';
-
-    // Slider
-    const slider = document.getElementById('gate-slider');
-    const sliderVal = document.getElementById('gate-slider-val');
-    slider.min = preview.max_active_words;
-    slider.max = preview.max_active_words + 50;
-    // Default: value that would fill the session
-    const deficit = preview.session_size - preview.ready_total;
-    const idealCap = preview.max_active_words + Math.min(deficit, preview.available_new_words);
-    slider.value = idealCap;
-    sliderVal.textContent = idealCap;
-
-    function recalc() {
-        const val = parseInt(slider.value);
-        sliderVal.textContent = val;
-        const increase = val - preview.max_active_words;
-        const newWords = Math.min(increase, preview.available_new_words);
-        const total = Math.min(preview.session_size, preview.ready_total + newWords);
-        const startBtn = document.getElementById('gate-start');
-        document.getElementById('gate-result').textContent =
-            '→ ' + total + ' questions' + (total >= preview.session_size ? ' (session full)' : '');
-        startBtn.textContent = 'Start Session (' + total + ')';
-        startBtn.disabled = total < 1;
-    }
-    recalc();
-
-    slider.oninput = recalc;
-
-    document.getElementById('gate-start').onclick = async () => {
-        const newMax = parseInt(slider.value);
-        gate.classList.add('hidden');
-        if (newMax !== preview.max_active_words) {
-            await api('/api/settings', 'PUT', { max_active_words: newMax });
-        }
-        await doStartSession();
-    };
-
-    document.getElementById('gate-cancel').onclick = () => {
-        gate.classList.add('hidden');
-    };
+    await doStartSession();
 }
 
 async function doStartSession() {
@@ -334,13 +259,19 @@ function showQuestion(data) {
     document.getElementById('chat-input').value = '';
     document.getElementById('archive-status').classList.add('hidden');
 
-    // Progress
+    // Progress (soft target)
     const progress = data.progress;
-    const pct = ((progress.current - 1) / progress.total * 100);
+    const target = progress.target || progress.total;
+    const pct = Math.min(100, (progress.current - 1) / target * 100);
     document.getElementById('progress-bar').style.width = pct + '%';
-    document.getElementById('progress-text').textContent =
-        `Question ${progress.current} of ${progress.total}` +
-        (progress.answered > 0 ? ` | ${progress.correct}/${progress.answered} correct` : '');
+    let progressText;
+    if (progress.answered >= target) {
+        progressText = `${progress.answered} answered (target: ${target})`;
+    } else {
+        progressText = `Question ${progress.current} of ${target}`;
+    }
+    if (progress.answered > 0) progressText += ` | ${progress.correct}/${progress.answered} correct`;
+    document.getElementById('progress-text').textContent = progressText;
 
     // Question type + New/Review badge
     const typeLabels = {
@@ -499,10 +430,39 @@ async function submitAnswer(selectedIndex, questionData) {
             audio.play().catch(() => {});
         }
 
-        // Update progress text
+        // Update progress text (soft target)
         const sp = result.session_progress;
-        document.getElementById('progress-text').textContent =
-            `${sp.correct}/${sp.answered} correct | ${sp.remaining} remaining`;
+        const spTarget = sp.target || (sp.answered + sp.remaining);
+        let spText;
+        if (sp.answered >= spTarget) {
+            spText = `${sp.answered} answered (target: ${spTarget}) | ${sp.correct}/${sp.answered} correct`;
+        } else {
+            spText = `${sp.correct}/${sp.answered} correct | ${sp.remaining} remaining`;
+        }
+        document.getElementById('progress-text').textContent = spText;
+        const spPct = Math.min(100, sp.answered / spTarget * 100);
+        document.getElementById('progress-bar').style.width = spPct + '%';
+
+        // Show/hide finish button once target is reached
+        const finishBtn = document.getElementById('btn-finish');
+        if (sp.answered >= spTarget && !result.session_complete) {
+            finishBtn.classList.remove('hidden');
+        } else {
+            finishBtn.classList.add('hidden');
+        }
+
+        // Finish button handler
+        finishBtn.onclick = async () => {
+            stopAllAudio();
+            try {
+                const finishResult = await api('/api/session/finish', 'POST', {
+                    session_id: currentSessionId,
+                });
+                showSummary(finishResult.summary);
+            } catch (e) {
+                console.error('Finish session failed:', e);
+            }
+        };
 
         // Next button
         const nextBtn = document.getElementById('btn-next');
@@ -1260,8 +1220,6 @@ async function loadSettings() {
         document.getElementById('set-session-size-val').textContent = s.session_size;
         document.getElementById('set-min-ready').value = s.min_ready_questions;
         document.getElementById('set-min-ready-val').textContent = s.min_ready_questions;
-        document.getElementById('set-max-active').value = s.max_active_words;
-        document.getElementById('set-max-active-val').textContent = s.max_active_words;
         document.getElementById('set-archive-interval').value = s.archive_interval_days;
         document.getElementById('set-archive-interval-val').textContent = s.archive_interval_days;
     } catch (e) {
@@ -1275,10 +1233,6 @@ document.getElementById('set-session-size').addEventListener('input', (e) => {
 
 document.getElementById('set-min-ready').addEventListener('input', (e) => {
     document.getElementById('set-min-ready-val').textContent = e.target.value;
-});
-
-document.getElementById('set-max-active').addEventListener('input', (e) => {
-    document.getElementById('set-max-active-val').textContent = e.target.value;
 });
 
 document.getElementById('set-archive-interval').addEventListener('input', (e) => {
@@ -1309,7 +1263,6 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
             elevenlabs_model: document.getElementById('set-elevenlabs-model').value,
             session_size: parseInt(document.getElementById('set-session-size').value),
             min_ready_questions: parseInt(document.getElementById('set-min-ready').value),
-            max_active_words: parseInt(document.getElementById('set-max-active').value),
             archive_interval_days: parseInt(document.getElementById('set-archive-interval').value),
         });
         showMessage('settings-message', 'Settings saved.', 'success');

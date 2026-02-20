@@ -257,9 +257,7 @@ async def script():
 
 @app.get("/api/stats")
 async def api_stats():
-    stats = get_db().get_stats()
-    stats["max_active_words"] = get_settings().max_active_words
-    return stats
+    return get_db().get_stats()
 
 
 # ── API: Import ───────────────────────────────────────────────────────────
@@ -312,52 +310,6 @@ async def api_generate(request: Request):
 
 # ── API: Session management ──────────────────────────────────────────────
 
-@app.get("/api/session/preview")
-async def api_session_preview():
-    """Compute what a session would contain without creating one."""
-    db = get_db()
-    s = get_settings()
-
-    # Pool 1: due reviews
-    review_qs = db.get_review_questions(limit=s.session_size)
-    review_count = len(review_qs)
-    seen = {q["target_word"].lower() for q in review_qs}
-
-    # Pool 2: new words (capped)
-    active_count = db.get_active_word_count()
-    room = max(0, s.max_active_words - active_count)
-    remaining = s.session_size - review_count
-    new_limit = min(room, remaining)
-    new_qs = db.get_new_questions(limit=new_limit) if new_limit > 0 else []
-    new_count = sum(1 for q in new_qs if q["target_word"].lower() not in seen)
-    seen.update(q["target_word"].lower() for q in new_qs)
-
-    # Pool 3: reinforcement (active-word unseen questions)
-    reinforce_remaining = s.session_size - review_count - new_count
-    active_qs = db.get_active_word_new_questions(
-        limit=reinforce_remaining, exclude_words=seen
-    ) if reinforce_remaining > 0 else []
-    reinforcement_count = len(active_qs)
-
-    ready_total = review_count + new_count + reinforcement_count
-
-    # How many more new-word questions exist in the bank (ignoring cap)?
-    all_new = db.get_new_questions(limit=s.session_size)
-    available_new = sum(1 for q in all_new if q["target_word"].lower() not in seen)
-
-    return {
-        "review_count": review_count,
-        "reinforcement_count": reinforcement_count,
-        "new_word_count": new_count,
-        "ready_total": ready_total,
-        "available_new_words": available_new,
-        "session_size": s.session_size,
-        "active_words": active_count,
-        "max_active_words": s.max_active_words,
-        "needs_gate": ready_total < s.session_size and available_new > 0,
-    }
-
-
 @app.post("/api/session/start")
 async def api_session_start():
     db = get_db()
@@ -368,31 +320,26 @@ async def api_session_start():
 
     session_id = db.start_session()
 
-    # Two-pool composition (like Anki):
-    # 1. Fill with due review questions
-    review_qs = db.get_review_questions(limit=s.session_size)
+    # 1. Load ALL due review questions (up to 200) — not capped at session_size.
+    #    The session target is soft; users can keep going past it.
+    review_qs = db.get_review_questions(limit=200)
     questions_data = list(review_qs)
     review_count = len(questions_data)
     seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
 
-    # 2. Fill remaining slots with new banked questions, respecting workload cap
+    # 2. Fill remaining slots (up to session_size) with new banked questions
     new_count = 0
-    active_count = db.get_active_word_count()
-    room = max(0, s.max_active_words - active_count)
-    remaining_slots = s.session_size - len(questions_data)
+    remaining_slots = max(0, s.session_size - len(questions_data))
     if remaining_slots > 0:
-        new_limit = min(room, remaining_slots)
-        if new_limit > 0:
-            new_qs = db.get_new_questions(limit=new_limit)
-            for q in new_qs:
-                if q["target_word"].lower() not in seen_words:
-                    questions_data.append(q)
-                    seen_words.add(q["target_word"].lower())
-                    new_count += 1
+        new_qs = db.get_new_questions(limit=remaining_slots)
+        for q in new_qs:
+            if q["target_word"].lower() not in seen_words:
+                questions_data.append(q)
+                seen_words.add(q["target_word"].lower())
+                new_count += 1
 
     # 3. Fill remaining slots with unseen questions for already-active words
-    #    (reinforcement — doesn't introduce new words, bypasses the cap)
-    remaining_slots = s.session_size - len(questions_data)
+    remaining_slots = max(0, s.session_size - len(questions_data))
     if remaining_slots > 0:
         active_qs = db.get_active_word_new_questions(limit=remaining_slots, exclude_words=seen_words)
         for q in active_qs:
@@ -405,11 +352,9 @@ async def api_session_start():
 
     # 4. Build generation queue for remaining slots (ordered, not shuffled)
     pending_queue: list[dict] = []
-    remaining_slots = s.session_size - len(questions_data)
-    new_word_room = max(0, room - new_count)
-    pending_limit = min(remaining_slots, new_word_room)
-    if pending_limit > 0:
-        targets = select_session_words(db, pending_limit + 10)
+    remaining_slots = max(0, s.session_size - len(questions_data))
+    if remaining_slots > 0:
+        targets = select_session_words(db, remaining_slots + 10)
         all_clusters = db.get_all_clusters()
         for word in targets:
             if word.lower() in seen_words:
@@ -425,7 +370,7 @@ async def api_session_start():
                     seen_words.add(word.lower())
                     new_count += 1
                     break
-            if len(pending_queue) >= pending_limit:
+            if len(pending_queue) >= remaining_slots:
                 break
 
     if not questions_data and not pending_queue:
@@ -444,6 +389,7 @@ async def api_session_start():
         "correct": 0,
         "review_count": review_count,
         "new_count": new_count,
+        "target": s.session_size,
     }
 
     # Background task generates pending questions sequentially —
@@ -526,6 +472,7 @@ async def api_session_answer(request: Request):
             "answered": session["total"],
             "correct": session["correct"],
             "remaining": len(session["questions"]) - session["current_index"],
+            "target": session.get("target", len(session["questions"])),
         },
     }
 
@@ -644,6 +591,7 @@ async def _get_next_question(session_id: int) -> dict:
             "total": len(session["questions"]),
             "answered": session["total"],
             "correct": session["correct"],
+            "target": session.get("target", len(session["questions"])),
         },
     }
 
@@ -657,6 +605,31 @@ async def api_session_next(request: Request):
     body = await request.json()
     session_id = body["session_id"]
     return await _get_next_question(session_id)
+
+
+@app.post("/api/session/finish")
+async def api_session_finish(request: Request):
+    """End a session early (e.g. after reaching the soft target)."""
+    body = await request.json()
+    session_id = body["session_id"]
+
+    if session_id not in _active_sessions:
+        raise HTTPException(404, "Session not found")
+
+    session = _active_sessions.pop(session_id)
+    db = get_db()
+    db.end_session(session_id, session["total"], session["correct"])
+
+    return {
+        "session_complete": True,
+        "summary": {
+            "total": session["total"],
+            "correct": session["correct"],
+            "accuracy": round(session["correct"] / max(session["total"], 1) * 100, 1),
+            "review_count": session.get("review_count", 0),
+            "new_count": session.get("new_count", 0),
+        },
+    }
 
 
 @app.get("/api/session/summary")

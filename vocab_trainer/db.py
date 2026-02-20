@@ -304,30 +304,29 @@ class Database:
         """Pull non-archived banked questions ordered by SRS priority.
 
         Priority:
-        0. Due words the user previously got wrong (struggling)
-        1. Other due words (spaced repetition schedule)
-        2. Never-reviewed words (new material)
-        3. Reviewed but not yet due (fallback — better than on-the-fly generation)
+        0. Due words (freshly due first — optimal SRS timing)
+        1. Never-reviewed words (new material)
+        2. Reviewed but not yet due (fallback — better than on-the-fly generation)
+
+        Within due words, freshly-due come first (next_review DESC) so words
+        at their optimal recall moment are quizzed before long-overdue ones.
         """
         now = datetime.now(timezone.utc).isoformat()
         rows = self.conn.execute("""
             SELECT q.*,
                 CASE
                     WHEN r.word IS NOT NULL AND r.next_review <= ?
-                         AND r.total_incorrect > r.total_correct
-                        THEN 0  -- struggling + due
-                    WHEN r.word IS NOT NULL AND r.next_review <= ?
-                        THEN 1  -- due
+                        THEN 0  -- due (freshly due first)
                     WHEN r.word IS NULL
-                        THEN 2  -- new
-                    ELSE 3      -- not yet due
+                        THEN 1  -- new
+                    ELSE 2      -- not yet due
                 END AS priority
             FROM questions q
             LEFT JOIN reviews r ON q.target_word = r.word
             WHERE q.archived = 0
-            ORDER BY priority ASC, q.times_shown ASC, RANDOM()
+            ORDER BY priority ASC, r.next_review DESC, q.times_shown ASC, RANDOM()
             LIMIT ?
-        """, (now, now, limit)).fetchall()
+        """, (now, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def get_review_questions(self, limit: int = 20) -> list[dict]:
@@ -335,7 +334,7 @@ class Database:
 
         Includes never-shown questions for due words (e.g. freshly generated
         questions for a word that already has review history).
-        Priority: struggling words first, then by staleness.
+        Freshly-due words first (optimal SRS timing), long-overdue last.
         """
         now = datetime.now(timezone.utc).isoformat()
         rows = self.conn.execute("""
@@ -344,9 +343,7 @@ class Database:
             JOIN reviews r ON q.target_word = r.word
             WHERE q.archived = 0
               AND r.next_review <= ?
-            ORDER BY
-                CASE WHEN r.total_incorrect > r.total_correct THEN 0 ELSE 1 END ASC,
-                r.next_review ASC
+            ORDER BY r.next_review DESC
             LIMIT ?
         """, (now, limit)).fetchall()
         return [dict(r) for r in rows]
@@ -581,13 +578,13 @@ class Database:
         return words
 
     def get_due_cluster_words(self, limit: int = 50) -> list[str]:
-        """Cluster words that are due for review."""
+        """Cluster words that are due for review (freshly due first)."""
         now = datetime.now(timezone.utc).isoformat()
         rows = self.conn.execute(
             "SELECT r.word FROM reviews r "
             "JOIN cluster_words cw ON r.word = cw.word "
             "WHERE r.next_review <= ? "
-            "ORDER BY r.next_review ASC LIMIT ?",
+            "ORDER BY r.next_review DESC LIMIT ?",
             (now, limit),
         ).fetchall()
         return [r[0] for r in rows]

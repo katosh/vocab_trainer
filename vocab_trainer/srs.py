@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from vocab_trainer.db import Database
 
+# When a word is overdue but remembered, give half-credit for the overdue period.
+# effective_interval = scheduled_interval + (overdue_days * OVERDUE_DAMPENING)
+OVERDUE_DAMPENING = 0.5
+
 
 def sm2_update(
     quality: int,
@@ -62,13 +66,28 @@ def quality_from_answer(correct: bool, time_seconds: float | None = None) -> int
 
 
 def record_review(db: Database, word: str, quality: int) -> None:
-    """Record a review of a word using SM-2."""
+    """Record a review of a word using SM-2.
+
+    When a word is overdue and answered correctly, the scheduled interval is
+    boosted by half the overdue period before feeding into SM-2.  This gives
+    credit for remembering something longer than expected.  Wrong answers
+    still reset to 1 day (SM-2 handles that internally).
+    """
     review = db.get_review(word)
 
     if review:
         ef = review["easiness_factor"]
         interval = review["interval_days"]
         reps = review["repetitions"]
+
+        # Compute effective interval with overdue credit for correct answers
+        if quality >= 3 and review["next_review"]:
+            next_due = datetime.fromisoformat(review["next_review"])
+            now = datetime.now(timezone.utc)
+            overdue_seconds = (now - next_due).total_seconds()
+            if overdue_seconds > 0:
+                overdue_days = overdue_seconds / 86400
+                interval = interval + (overdue_days * OVERDUE_DAMPENING)
     else:
         ef = 2.5
         interval = 1.0

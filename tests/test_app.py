@@ -174,6 +174,36 @@ class TestSessionAPI:
         data = resp.json()
         assert len(data["sessions"]) == 1
 
+    def test_session_finish(self, test_app_with_data):
+        """POST /api/session/finish ends session early and returns summary."""
+        client, db, settings = test_app_with_data
+        session_id = db.start_session()
+        app_module._active_sessions[session_id] = {
+            "questions": [],
+            "current_index": 0,
+            "total": 5,
+            "correct": 3,
+            "review_count": 4,
+            "new_count": 1,
+            "target": 20,
+        }
+
+        resp = client.post("/api/session/finish", json={"session_id": session_id})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_complete"] is True
+        assert data["summary"]["total"] == 5
+        assert data["summary"]["correct"] == 3
+        assert data["summary"]["accuracy"] == 60.0
+        # Session should be removed from active sessions
+        assert session_id not in app_module._active_sessions
+
+    def test_session_finish_missing(self, test_app):
+        """POST /api/session/finish with unknown session returns 404."""
+        client, _, _ = test_app
+        resp = client.post("/api/session/finish", json={"session_id": 9999})
+        assert resp.status_code == 404
+
 
 class TestAudioAPI:
     def test_missing_audio(self, test_app):
