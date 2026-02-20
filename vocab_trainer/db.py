@@ -589,6 +589,29 @@ class Database:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def get_word_cluster_question_counts(self) -> list[dict]:
+        """All (word, cluster) pairs with their existing unarchived question count.
+
+        Only includes pairs from clusters with >= 4 words (enough for 4 choices).
+        """
+        rows = self.conn.execute("""
+            SELECT cw.word, cw.meaning, cw.distinction,
+                   c.id AS cluster_id, c.title AS cluster_title,
+                   COUNT(q.id) AS question_count
+            FROM cluster_words cw
+            JOIN clusters c ON cw.cluster_id = c.id
+            LEFT JOIN questions q
+                ON q.target_word = cw.word
+                AND q.cluster_title = c.title
+                AND q.archived = 0
+            WHERE c.id IN (
+                SELECT cluster_id FROM cluster_words
+                GROUP BY cluster_id HAVING COUNT(*) >= 4
+            )
+            GROUP BY cw.word, c.id
+        """).fetchall()
+        return [dict(r) for r in rows]
+
     def get_reviewed_word_count(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) FROM reviews").fetchone()
         return row[0]

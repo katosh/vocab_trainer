@@ -46,6 +46,35 @@ def _pick_question_type() -> str:
     return "fill_blank"
 
 
+def _pick_word_cluster(db: Database) -> tuple[dict, dict] | None:
+    """Pick a (cluster, word_info) pair weighted by coverage deficit.
+
+    Builds a categorical distribution over all (word, cluster) pairs where
+    each pair's probability is proportional to 1 / (1 + question_count).
+    Words that already have many questions are unlikely to be chosen;
+    words with zero questions are most likely.
+
+    Returns (cluster_dict, word_info_dict) or None if no valid pairs exist.
+    """
+    pairs = db.get_word_cluster_question_counts()
+    if not pairs:
+        return None
+
+    weights = [1.0 / (1 + p["question_count"]) for p in pairs]
+    chosen = random.choices(pairs, weights=weights, k=1)[0]
+
+    cluster = db.get_cluster_by_title(chosen["cluster_title"])
+    if cluster is None:
+        return None
+
+    word_info = {
+        "word": chosen["word"],
+        "meaning": chosen["meaning"],
+        "distinction": chosen["distinction"],
+    }
+    return cluster, word_info
+
+
 def _extract_json(text: str) -> dict | None:
     """Extract JSON object from LLM response, handling markdown code fences."""
     # Try to find JSON in code fence
@@ -107,19 +136,16 @@ async def generate_question(
 
     If cluster/target_word_info not provided, picks a random cluster and word.
     """
-    # Pick a random cluster if not provided
-    if cluster is None:
-        cluster = db.get_random_cluster()
-        if cluster is None:
+    # Pick cluster + word using coverage-weighted selection if not provided
+    if cluster is None or target_word_info is None:
+        picked = _pick_word_cluster(db)
+        if picked is None:
             return None
+        cluster, target_word_info = picked
 
     cluster_words = db.get_cluster_words(cluster["id"])
     if len(cluster_words) < 4:
         return None
-
-    # Pick target word
-    if target_word_info is None:
-        target_word_info = random.choice(cluster_words)
 
     # Pick question type
     if question_type is None:

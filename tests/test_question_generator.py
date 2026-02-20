@@ -8,6 +8,7 @@ import pytest
 from vocab_trainer.question_generator import (
     _extract_json,
     _pick_question_type,
+    _pick_word_cluster,
     _validate_question,
     generate_question,
 )
@@ -138,6 +139,57 @@ class TestPickQuestionType:
         for _ in range(100):
             qtype = _pick_question_type()
             assert qtype in ("fill_blank", "best_fit", "distinction")
+
+
+class TestPickWordCluster:
+    def test_returns_valid_pair(self, populated_db):
+        result = _pick_word_cluster(populated_db)
+        assert result is not None
+        cluster, word_info = result
+        assert "title" in cluster
+        assert "word" in word_info
+        assert "meaning" in word_info
+
+    def test_returns_none_with_no_clusters(self, tmp_db):
+        assert _pick_word_cluster(tmp_db) is None
+
+    def test_favors_uncovered_words(self, populated_db):
+        """Words with no existing questions should be chosen much more often
+        than words that already have several questions."""
+        from vocab_trainer.models import Question
+        import uuid
+
+        # Give "terse" 10 banked questions in the "Being Brief" cluster
+        for _ in range(10):
+            populated_db.save_question(Question(
+                id=str(uuid.uuid4()),
+                question_type="fill_blank",
+                stem="A ___ reply.",
+                choices=["terse", "concise", "pithy", "laconic"],
+                correct_index=0,
+                correct_word="terse",
+                explanation="test",
+                context_sentence="A terse reply.",
+                cluster_title="Being Brief",
+                llm_provider="test",
+            ))
+
+        # Sample many times and count how often "terse" is picked
+        terse_count = 0
+        n = 200
+        for _ in range(n):
+            result = _pick_word_cluster(populated_db)
+            assert result is not None
+            _, word_info = result
+            if word_info["word"] == "terse":
+                terse_count += 1
+
+        # "terse" has weight 1/(1+10) = 0.091, other 5 words have 1/(1+0) = 1.0 each
+        # Expected terse fraction ≈ 0.091 / (5*1.0 + 0.091) ≈ 1.8%
+        # It should be picked much less than uniform (1/6 ≈ 16.7%)
+        assert terse_count < n * 0.08, (
+            f"terse picked {terse_count}/{n} times — weighting not working"
+        )
 
 
 class TestGenerateQuestion:

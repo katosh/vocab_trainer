@@ -277,6 +277,30 @@ class TestQuestionPools:
         assert populated_db.get_ready_question_count() == 0
 
 
+class TestWordClusterQuestionCounts:
+    def test_returns_all_cluster_words(self, populated_db):
+        """Returns a row for every word in clusters with >= 4 words."""
+        pairs = populated_db.get_word_cluster_question_counts()
+        # "Being Brief" cluster has 6 words, all should be returned
+        words = {p["word"] for p in pairs}
+        assert "terse" in words
+        assert "concise" in words
+        assert len(pairs) == 6
+
+    def test_counts_existing_questions(self, populated_db, sample_question):
+        """Question count reflects banked questions for the word-cluster pair."""
+        populated_db.save_question(sample_question)  # terse in "Being Brief"
+        pairs = populated_db.get_word_cluster_question_counts()
+        terse = next(p for p in pairs if p["word"] == "terse")
+        concise = next(p for p in pairs if p["word"] == "concise")
+        assert terse["question_count"] == 1
+        assert concise["question_count"] == 0
+
+    def test_empty_db(self, tmp_db):
+        """No clusters → empty result."""
+        assert tmp_db.get_word_cluster_question_counts() == []
+
+
 class TestReviews:
     def test_new_word_no_review(self, populated_db):
         r = populated_db.get_review("perspicacious")
