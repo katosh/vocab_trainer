@@ -68,6 +68,12 @@ def sample_question():
         context_sentence="Her terse reply left no room for pleasantries.",
         cluster_title="Being Brief",
         llm_provider="test",
+        choice_details=[
+            {"word": "terse", "base_word": "terse", "meaning": "brief to the point of seeming rude", "distinction": "brevity as personality trait", "why": "Fits — the reply was rude."},
+            {"word": "concise", "base_word": "concise", "meaning": "expressing much in few words", "distinction": "implies skillful compression", "why": "Too neutral — no rudeness implied."},
+            {"word": "pithy", "base_word": "pithy", "meaning": "concise AND forcefully meaningful", "distinction": "the best kind of brief", "why": "Implies quality, not rudeness."},
+            {"word": "laconic", "base_word": "laconic", "meaning": "using very few words habitually", "distinction": "temperamental preference for silence", "why": "Habitual trait, not situational."},
+        ],
     )
 
 

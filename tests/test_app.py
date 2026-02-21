@@ -156,6 +156,23 @@ class TestSessionAPI:
             assert "choices" in data
             assert "session_id" in data
 
+    def test_session_question_includes_choice_details(self, test_app_with_data):
+        """Session questions include choice_details with meaning/distinction/why."""
+        client, db, settings = test_app_with_data
+        settings.session_size = 1
+
+        resp = client.post("/api/session/start")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert len(data["choice_details"]) == 4
+        for detail in data["choice_details"]:
+            assert "word" in detail
+            assert "base_word" in detail
+            assert "meaning" in detail
+            assert "distinction" in detail
+            assert "why" in detail
+
     def test_answer_missing_session(self, test_app):
         client, _, _ = test_app
         resp = client.post("/api/session/answer", json={

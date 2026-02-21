@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from vocab_trainer.models import Question
 from vocab_trainer.prompts import (
     BEST_FIT_PROMPT,
+    CHOICE_ENRICHMENT_PROMPT,
     DISTINCTION_PROMPT,
     FILL_BLANK_PROMPT,
     format_cluster_info,
@@ -137,6 +138,62 @@ def _validate_question(data: dict, target_word: str) -> bool:
     return True
 
 
+ENRICHMENT_RETRIES = 2
+
+
+async def _enrich_choices(
+    llm: LLMProvider,
+    cluster: dict,
+    cluster_words: list[dict],
+    data: dict,
+) -> list[dict]:
+    """Step 2: enrich choices via a second LLM call.
+
+    Returns a list of dicts with word, base_word, meaning, distinction, why.
+    Falls back to stem-based lookup on failure.
+    """
+    prompt = CHOICE_ENRICHMENT_PROMPT.format(
+        cluster_title=cluster["title"],
+        cluster_info=format_cluster_info(cluster_words),
+        stem=data["stem"],
+        choices_formatted=", ".join(data["choices"]),
+        correct_word=data["choices"][data["correct_index"]],
+        correct_index=data["correct_index"],
+    )
+
+    for attempt in range(ENRICHMENT_RETRIES):
+        try:
+            response = await llm.generate(prompt, temperature=0.3)
+            parsed = _extract_json(response)
+            if parsed is None:
+                continue
+            details = parsed.get("choice_details", [])
+            if not isinstance(details, list) or len(details) != len(data["choices"]):
+                continue
+            # Validate each detail has required fields
+            required = {"word", "base_word", "meaning", "distinction", "why"}
+            if all(required.issubset(d.keys()) for d in details):
+                return details
+        except Exception:
+            pass
+
+    # Fallback: stem-based lookup (no why field from LLM)
+    from vocab_trainer.db import _lookup_cluster_word
+
+    cw_map = {w["word"].lower(): w for w in cluster_words}
+    fallback = []
+    for c in data["choices"]:
+        info = _lookup_cluster_word(cw_map, c) or {}
+        fallback.append({
+            "word": c,
+            "base_word": info.get("word", c) if info else c,
+            "meaning": info.get("meaning", ""),
+            "distinction": info.get("distinction", ""),
+            "why": "",
+        })
+    return fallback
+
+
 async def generate_question(
     llm: LLMProvider,
     db: Database,
@@ -187,6 +244,12 @@ async def generate_question(
             if not _validate_question(data, target_word_info["word"]):
                 continue
 
+            # Step 2: enrich choices via second LLM call (falls back to
+            # stem-based lookup if the enrichment call fails)
+            choice_details = await _enrich_choices(
+                llm, cluster, cluster_words, data,
+            )
+
             return Question(
                 id=str(uuid.uuid4()),
                 question_type=question_type,
@@ -198,7 +261,7 @@ async def generate_question(
                 context_sentence=data["context_sentence"],
                 cluster_title=cluster["title"],
                 llm_provider=llm.name(),
-                choice_explanations=data.get("choice_explanations", []),
+                choice_details=choice_details,
             )
         except Exception as e:
             if attempt == MAX_RETRIES - 1:

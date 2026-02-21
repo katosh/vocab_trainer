@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS file_mtimes (
 """
 
 
+def _lookup_cluster_word(cw_map: dict[str, dict], choice: str) -> dict | None:
+    """Match a choice to a cluster word, trying stem stripping for inflected forms."""
+    key = choice.lower()
+    if key in cw_map:
+        return cw_map[key]
+    for suffix in ("ed", "d", "ing", "s", "es", "ly"):
+        if key.endswith(suffix) and key[: -len(suffix)] in cw_map:
+            return cw_map[key[: -len(suffix)]]
+    return None
+
+
 class Database:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -113,6 +124,10 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE questions ADD COLUMN choice_explanations_json TEXT DEFAULT '[]'"
             )
+        if "choice_details_json" not in cols:
+            self.conn.execute(
+                "ALTER TABLE questions ADD COLUMN choice_details_json TEXT DEFAULT '[]'"
+            )
         # clusters.source_file
         cursor = self.conn.execute("PRAGMA table_info(clusters)")
         cluster_cols = {row[1] for row in cursor.fetchall()}
@@ -121,6 +136,8 @@ class Database:
                 "ALTER TABLE clusters ADD COLUMN source_file TEXT"
             )
         self.conn.commit()
+        # Backfill choice_details for existing questions
+        self.backfill_choice_details()
 
     def close(self) -> None:
         self.conn.close()
@@ -250,8 +267,8 @@ class Database:
             "INSERT OR REPLACE INTO questions "
             "(id, question_type, target_word, stem, choices_json, correct_index, "
             "explanation, context_sentence, cluster_title, llm_provider, generated_at, "
-            "choice_explanations_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "choice_explanations_json, choice_details_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 q.id,
                 q.question_type,
@@ -265,9 +282,82 @@ class Database:
                 q.llm_provider,
                 datetime.now(timezone.utc).isoformat(),
                 json.dumps(q.choice_explanations),
+                json.dumps(q.choice_details),
             ),
         )
         self.conn.commit()
+
+    def backfill_choice_details(self) -> int:
+        """Backfill or upgrade choice_details_json for existing questions.
+
+        Handles two cases:
+        1. Empty details (NULL or '[]') — build from cluster_words + stem lookup
+        2. Old-format details (missing 'base_word' or 'why') — upgrade in place
+
+        Merges legacy choice_explanations_json into the ``why`` field.
+        Returns the number of questions updated.
+        """
+        rows = self.conn.execute(
+            "SELECT id, choices_json, cluster_title, choice_explanations_json, "
+            "choice_details_json FROM questions"
+        ).fetchall()
+        if not rows:
+            return 0
+
+        updated = 0
+        for row in rows:
+            cluster_title = row["cluster_title"]
+            if not cluster_title:
+                continue
+
+            raw_details = row["choice_details_json"] or "[]"
+            try:
+                existing_details = json.loads(raw_details)
+            except (json.JSONDecodeError, TypeError):
+                existing_details = []
+
+            # Skip if already in new format (has base_word and why on all entries)
+            if existing_details and all(
+                "base_word" in d and "why" in d for d in existing_details
+            ):
+                continue
+
+            cluster = self.get_cluster_by_title(cluster_title)
+            if not cluster:
+                continue
+            cw = self.get_cluster_words(cluster["id"])
+            cw_map = {w["word"].lower(): w for w in cw}
+
+            choices = json.loads(row["choices_json"])
+
+            # Parse legacy per-choice explanations
+            raw_expl = row["choice_explanations_json"] or "[]"
+            try:
+                per_choice = json.loads(raw_expl)
+            except (json.JSONDecodeError, TypeError):
+                per_choice = []
+
+            details = []
+            for i, c in enumerate(choices):
+                info = _lookup_cluster_word(cw_map, c)
+                # Preserve any existing meaning/distinction from old details
+                old = existing_details[i] if i < len(existing_details) else {}
+                details.append({
+                    "word": c,
+                    "base_word": info.get("word", c) if info else c,
+                    "meaning": old.get("meaning") or (info.get("meaning", "") if info else ""),
+                    "distinction": old.get("distinction") or (info.get("distinction", "") if info else ""),
+                    "why": old.get("why") or (per_choice[i] if i < len(per_choice) else ""),
+                })
+
+            self.conn.execute(
+                "UPDATE questions SET choice_details_json = ? WHERE id = ?",
+                (json.dumps(details), row["id"]),
+            )
+            updated += 1
+
+        self.conn.commit()
+        return updated
 
     def get_question_bank_size(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) FROM questions").fetchone()

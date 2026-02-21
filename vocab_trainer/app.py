@@ -164,6 +164,8 @@ async def _pregenerate_session_questions(session_id: int, pending_indices: list[
                         "explanation": q.explanation,
                         "context_sentence": q.context_sentence,
                         "cluster_title": q.cluster_title,
+                        "choice_explanations_json": json.dumps(q.choice_explanations),
+                        "choice_details_json": json.dumps(q.choice_details),
                     }
                     _pregen_log.info("Pre-generated question %d/%d for session %d",
                                      idx + 1, len(session["questions"]), session_id)
@@ -532,35 +534,18 @@ async def _get_next_question(session_id: int) -> dict:
     if isinstance(choices, str):
         choices = json.loads(choices)
 
-    # Look up meanings/distinctions for all choices from the cluster
-    choice_details = []
     cluster_title = q_data.get("cluster_title", "")
+    db = get_db()
 
-    # Parse stored per-choice explanations (from LLM generation)
-    raw_explanations = q_data.get("choice_explanations_json", "[]")
-    if isinstance(raw_explanations, str):
+    # Parse stored choice_details (always populated — backfill runs on startup)
+    raw_details = q_data.get("choice_details_json", "[]")
+    if isinstance(raw_details, str):
         try:
-            per_choice = json.loads(raw_explanations)
+            choice_details = json.loads(raw_details)
         except (json.JSONDecodeError, TypeError):
-            per_choice = []
+            choice_details = []
     else:
-        per_choice = raw_explanations or []
-
-    if cluster_title:
-        db = get_db()
-        cluster = db.get_cluster_by_title(cluster_title)
-        if cluster:
-            cw = db.get_cluster_words(cluster["id"])
-            cw_map = {w["word"].lower(): w for w in cw}
-            for i, c in enumerate(choices):
-                info = cw_map.get(c.lower())
-                detail = {
-                    "word": c,
-                    "meaning": info.get("meaning", "") if info else "",
-                    "distinction": info.get("distinction", "") if info else "",
-                    "why": per_choice[i] if i < len(per_choice) else "",
-                }
-                choice_details.append(detail)
+        choice_details = raw_details or []
 
     # Shuffle choices so the correct answer isn't always in the same slot
     correct_index = q_data["correct_index"]

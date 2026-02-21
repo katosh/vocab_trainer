@@ -111,11 +111,125 @@ class TestQuestions:
         assert qs[0]["times_shown"] == 1
         assert qs[0]["times_correct"] == 0
 
+    def test_choice_details_round_trip(self, populated_db):
+        """choice_details_json is persisted and retrievable."""
+        q = Question(
+            id="test-cd-001",
+            question_type="fill_blank",
+            stem="Her ___ reply left no room.",
+            choices=["terse", "concise", "pithy", "laconic"],
+            correct_index=0,
+            correct_word="terse",
+            explanation="Terse implies rudeness.",
+            context_sentence="Her terse reply left no room.",
+            cluster_title="Being Brief",
+            llm_provider="test",
+            choice_details=[
+                {"word": "terse", "meaning": "brief and rude", "distinction": "personality trait"},
+                {"word": "concise", "meaning": "brief and clear", "distinction": "skillful compression"},
+                {"word": "pithy", "meaning": "concise and meaningful", "distinction": "best kind of brief"},
+                {"word": "laconic", "meaning": "few words habitually", "distinction": "temperamental"},
+            ],
+        )
+        populated_db.save_question(q)
+        rows = populated_db.get_questions_for_word("terse")
+        row = next(r for r in rows if r["id"] == "test-cd-001")
+        details = json.loads(row["choice_details_json"])
+        assert len(details) == 4
+        assert details[0]["word"] == "terse"
+        assert details[0]["meaning"] == "brief and rude"
+        assert details[1]["distinction"] == "skillful compression"
+
     def test_used_questions_not_in_unused(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
         populated_db.record_question_shown("test-q-001", correct=True)
         unused = populated_db.get_unused_questions(limit=10)
         assert len(unused) == 0
+
+
+class TestBackfillChoiceDetails:
+    """Tests for backfill_choice_details."""
+
+    def test_backfill_populates_empty_details(self, populated_db, sample_question):
+        """Questions with empty choice_details_json get backfilled from cluster."""
+        populated_db.save_question(sample_question)
+        # Manually clear choice_details_json to simulate old question
+        populated_db.conn.execute(
+            "UPDATE questions SET choice_details_json = '[]' WHERE id = ?",
+            (sample_question.id,),
+        )
+        populated_db.conn.commit()
+
+        updated = populated_db.backfill_choice_details()
+        assert updated == 1
+
+        row = populated_db.get_questions_for_word("terse")[0]
+        details = json.loads(row["choice_details_json"])
+        assert len(details) == 4
+        assert details[0]["word"] == "terse"
+        assert details[0]["meaning"] != ""
+
+    def test_backfill_skips_already_populated(self, populated_db):
+        """Questions with new-format choice_details are not re-backfilled."""
+        q = Question(
+            id="test-bf-001",
+            question_type="fill_blank",
+            stem="A ___ reply.",
+            choices=["terse", "concise", "pithy", "laconic"],
+            correct_index=0,
+            correct_word="terse",
+            explanation="test",
+            context_sentence="A terse reply.",
+            cluster_title="Being Brief",
+            llm_provider="test",
+            choice_details=[
+                {"word": "terse", "base_word": "terse", "meaning": "brief", "distinction": "rude", "why": "fits"},
+                {"word": "concise", "base_word": "concise", "meaning": "compressed", "distinction": "skill", "why": "too neutral"},
+                {"word": "pithy", "base_word": "pithy", "meaning": "forceful", "distinction": "best", "why": "too positive"},
+                {"word": "laconic", "base_word": "laconic", "meaning": "few words", "distinction": "habit", "why": "habitual"},
+            ],
+        )
+        populated_db.save_question(q)
+        updated = populated_db.backfill_choice_details()
+        assert updated == 0
+
+    def test_backfill_upgrades_old_format(self, populated_db):
+        """Questions with old-format details (no base_word/why) get upgraded."""
+        q = Question(
+            id="test-bf-upgrade",
+            question_type="fill_blank",
+            stem="A ___ reply.",
+            choices=["terse", "concise", "pithy", "laconic"],
+            correct_index=0,
+            correct_word="terse",
+            explanation="test",
+            context_sentence="A terse reply.",
+            cluster_title="Being Brief",
+            llm_provider="test",
+            choice_explanations=["why terse", "why concise", "why pithy", "why laconic"],
+            choice_details=[
+                {"word": "terse", "meaning": "brief and rude", "distinction": "personality"},
+                {"word": "concise", "meaning": "compressed", "distinction": "skill"},
+                {"word": "pithy", "meaning": "forceful", "distinction": "best brief"},
+                {"word": "laconic", "meaning": "few words", "distinction": "habit"},
+            ],
+        )
+        populated_db.save_question(q)
+        updated = populated_db.backfill_choice_details()
+        assert updated == 1
+
+        row = populated_db.get_questions_for_word("terse")[0]
+        details = json.loads(row["choice_details_json"])
+        assert len(details) == 4
+        # Should now have base_word and why
+        for d in details:
+            assert "base_word" in d
+            assert "why" in d
+        # Preserved existing meaning
+        assert details[0]["meaning"] == "brief and rude"
+        # Merged choice_explanations into why
+        assert details[0]["why"] == "why terse"
+        assert details[1]["why"] == "why concise"
 
 
 class TestArchival:

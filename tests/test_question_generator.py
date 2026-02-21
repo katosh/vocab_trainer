@@ -6,6 +6,7 @@ import json
 import pytest
 
 from vocab_trainer.question_generator import (
+    _enrich_choices,
     _extract_json,
     _fix_article_before_blank,
     _pick_question_type,
@@ -232,18 +233,45 @@ class TestPickWordCluster:
         )
 
 
+def _make_enrichment_response(choices, cluster_words_map=None):
+    """Build a valid enrichment JSON response for the given choices."""
+    details = []
+    for c in choices:
+        base = c.lower()
+        meaning, distinction = "", ""
+        if cluster_words_map:
+            # Try exact then stem stripping
+            for suffix in ("", "ly", "ed", "d", "ing", "s", "es"):
+                key = base[: -len(suffix)] if suffix and base.endswith(suffix) else base
+                if key in cluster_words_map:
+                    meaning = cluster_words_map[key]["meaning"]
+                    distinction = cluster_words_map[key]["distinction"]
+                    base = key
+                    break
+        details.append({
+            "word": c,
+            "base_word": base,
+            "meaning": meaning or f"meaning of {c}",
+            "distinction": distinction or f"distinction of {c}",
+            "why": f"Why {c} does or doesn't fit this sentence.",
+        })
+    return json.dumps({"choice_details": details})
+
+
 class TestGenerateQuestion:
     @pytest.mark.asyncio
     async def test_with_mock_llm(self, populated_db):
-        llm_response = json.dumps({
+        choices = ["terse", "concise", "pithy", "laconic"]
+        step1 = json.dumps({
             "stem": "Her ___ reply surprised everyone.",
-            "choices": ["terse", "concise", "pithy", "laconic"],
+            "choices": choices,
             "correct_index": 0,
             "explanation": "Terse implies rudeness.",
             "context_sentence": "Her terse reply surprised everyone.",
         })
+        step2 = _make_enrichment_response(choices)
 
-        llm = FakeLLM(responses=[llm_response])
+        llm = FakeLLM(responses=[step1, step2])
 
         cluster = populated_db.get_random_cluster()
         cw = populated_db.get_cluster_words(cluster["id"])
@@ -261,20 +289,142 @@ class TestGenerateQuestion:
         assert q.question_type == "fill_blank"
         assert q.llm_provider == "fake-llm"
         assert len(q.choices) == 4
-        assert llm.call_count == 1
+        # Step 1 + Step 2 enrichment
+        assert llm.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_choice_details_populated(self, populated_db):
+        """Generated questions include enriched choice_details with all fields."""
+        choices = ["terse", "concise", "pithy", "laconic"]
+        step1 = json.dumps({
+            "stem": "Her ___ reply surprised everyone.",
+            "choices": choices,
+            "correct_index": 0,
+            "explanation": "Terse implies rudeness.",
+            "context_sentence": "Her terse reply surprised everyone.",
+        })
+        cluster = populated_db.get_random_cluster()
+        cw = populated_db.get_cluster_words(cluster["id"])
+        cw_map = {w["word"].lower(): w for w in cw}
+        step2 = _make_enrichment_response(choices, cw_map)
+
+        llm = FakeLLM(responses=[step1, step2])
+        target = next(w for w in cw if w["word"] == "terse")
+
+        q = await generate_question(
+            llm, populated_db,
+            cluster=cluster,
+            target_word_info=target,
+            question_type="fill_blank",
+        )
+
+        assert q is not None
+        assert len(q.choice_details) == 4
+        # Each detail should have all 5 fields from enrichment
+        for detail in q.choice_details:
+            assert "word" in detail
+            assert "base_word" in detail
+            assert "meaning" in detail
+            assert "distinction" in detail
+            assert "why" in detail
+            assert detail["why"] != ""
+        # Verify the details match cluster_words
+        terse_detail = next(d for d in q.choice_details if d["word"] == "terse")
+        assert "rude" in terse_detail["meaning"].lower() or "brief" in terse_detail["meaning"].lower()
+
+    @pytest.mark.asyncio
+    async def test_choice_details_with_conjugated_distractors(self, populated_db):
+        """Conjugated distractors (e.g. 'concisely') still resolve via enrichment or fallback."""
+        choices = ["terse", "concisely", "pithily", "laconically"]
+        step1 = json.dumps({
+            "stem": "Her ___ reply surprised everyone.",
+            "choices": choices,
+            "correct_index": 0,
+            "explanation": "Terse implies rudeness.",
+            "context_sentence": "Her terse reply surprised everyone.",
+        })
+        cluster = populated_db.get_random_cluster()
+        cw = populated_db.get_cluster_words(cluster["id"])
+        cw_map = {w["word"].lower(): w for w in cw}
+        step2 = _make_enrichment_response(choices, cw_map)
+
+        llm = FakeLLM(responses=[step1, step2])
+        target = next(w for w in cw if w["word"] == "terse")
+
+        q = await generate_question(
+            llm, populated_db,
+            cluster=cluster,
+            target_word_info=target,
+            question_type="fill_blank",
+        )
+
+        assert q is not None
+        assert len(q.choice_details) == 4
+        # "concisely" should resolve to base_word "concise"
+        concise_detail = next(d for d in q.choice_details if d["word"] == "concisely")
+        assert concise_detail["base_word"] == "concise"
+        assert concise_detail["meaning"] != "", (
+            "Conjugated distractor 'concisely' should resolve to 'concise' meaning"
+        )
+
+    @pytest.mark.asyncio
+    async def test_enrichment_fallback_on_failure(self, populated_db):
+        """When enrichment LLM call fails, falls back to stem-based lookup."""
+        choices = ["terse", "concise", "pithy", "laconic"]
+        step1 = json.dumps({
+            "stem": "Her ___ reply surprised everyone.",
+            "choices": choices,
+            "correct_index": 0,
+            "explanation": "Terse implies rudeness.",
+            "context_sentence": "Her terse reply surprised everyone.",
+        })
+        # Only provide step 1 response — enrichment will get same JSON
+        # which lacks choice_details, causing fallback after 2 retries
+        llm = FakeLLM(responses=[step1])
+
+        cluster = populated_db.get_random_cluster()
+        cw = populated_db.get_cluster_words(cluster["id"])
+        target = next(w for w in cw if w["word"] == "terse")
+
+        q = await generate_question(
+            llm, populated_db,
+            cluster=cluster,
+            target_word_info=target,
+            question_type="fill_blank",
+        )
+
+        assert q is not None
+        assert len(q.choice_details) == 4
+        # Fallback should still populate from cluster_words
+        for detail in q.choice_details:
+            assert "word" in detail
+            assert "base_word" in detail
+            assert "meaning" in detail
+            assert "distinction" in detail
+            assert "why" in detail
+        # But why will be empty (no LLM enrichment)
+        for detail in q.choice_details:
+            assert detail["why"] == ""
+        # 1 step1 + 2 enrichment retries = 3 calls
+        assert llm.call_count == 3
 
     @pytest.mark.asyncio
     async def test_invalid_llm_response_retries(self, populated_db):
+        valid_step1 = json.dumps({
+            "stem": "A ___ report wastes no words.",
+            "choices": ["concise", "terse", "pithy", "laconic"],
+            "correct_index": 0,
+            "explanation": "Concise means compressed.",
+            "context_sentence": "A concise report wastes no words.",
+        })
+        enrichment = _make_enrichment_response(
+            ["concise", "terse", "pithy", "laconic"],
+        )
         llm = FakeLLM(responses=[
             "Not valid JSON",
             "Still not valid",
-            json.dumps({
-                "stem": "A ___ report wastes no words.",
-                "choices": ["concise", "terse", "pithy", "laconic"],
-                "correct_index": 0,
-                "explanation": "Concise means compressed.",
-                "context_sentence": "A concise report wastes no words.",
-            }),
+            valid_step1,
+            enrichment,
         ])
 
         cluster = populated_db.get_random_cluster()
@@ -289,7 +439,8 @@ class TestGenerateQuestion:
 
         assert q is not None
         assert q.correct_word == "concise"
-        assert llm.call_count == 3
+        # 2 failed step1 + 1 successful step1 + 1 enrichment = 4
+        assert llm.call_count == 4
 
     @pytest.mark.asyncio
     async def test_all_retries_fail(self, populated_db):

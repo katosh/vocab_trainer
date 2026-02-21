@@ -23,10 +23,7 @@ clearly the best choice.
 The distractors should be plausible but specifically wrong based on the distinctions.
 4. Write a brief explanation (1-2 sentences) of why the correct word fits and the \
 best distractor doesn't.
-5. For EACH choice, write a short explanation (1 sentence) of why it is correct or \
-why it doesn't fit this specific sentence. Reference the sentence context, not just \
-the generic definition.
-6. Provide the full sentence with the answer filled in (for text-to-speech).
+5. Provide the full sentence with the answer filled in (for text-to-speech).
 
 ALL four choices MUST be conjugated/inflected identically to fit the blank's grammatical \
 slot. If the sentence needs a past tense verb, make every choice past tense. If it needs \
@@ -39,7 +36,6 @@ Respond in this exact JSON format only, with no other text:
   "choices": ["word1", "word2", "word3", "word4"],
   "correct_index": 0,
   "explanation": "Why this word fits best",
-  "choice_explanations": ["why word1 fits/doesn't", "why word2 fits/doesn't", "why word3 fits/doesn't", "why word4 fits/doesn't"],
   "context_sentence": "Full sentence with answer filled in"
 }}
 """
@@ -65,9 +61,7 @@ action, or characteristic is described WITHOUT using any of the cluster words.
 shade of meaning.
 4. Provide exactly 4 choices from the same cluster.
 5. Write a brief explanation.
-6. For EACH choice, write a short explanation (1 sentence) of why it is correct or \
-why it doesn't fit this specific scenario. Reference the scenario, not just the definition.
-7. Provide a sentence using the correct word that captures the scenario.
+6. Provide a sentence using the correct word that captures the scenario.
 
 Respond in this exact JSON format only, with no other text:
 {{
@@ -75,7 +69,6 @@ Respond in this exact JSON format only, with no other text:
   "choices": ["word1", "word2", "word3", "word4"],
   "correct_index": 0,
   "explanation": "Why this word fits best",
-  "choice_explanations": ["why word1 fits/doesn't", "why word2 fits/doesn't", "why word3 fits/doesn't", "why word4 fits/doesn't"],
   "context_sentence": "A sentence using the correct word"
 }}
 """
@@ -100,9 +93,7 @@ Instructions:
 2. The question should test whether the student knows the PRECISE shade of meaning.
 3. Provide exactly 4 choices from the same cluster.
 4. Write a brief explanation referencing the key distinction.
-5. For EACH choice, write a short explanation (1 sentence) of why it is correct or \
-why it doesn't match the distinction being tested.
-6. Provide a sentence illustrating the correct word's distinctive meaning.
+5. Provide a sentence illustrating the correct word's distinctive meaning.
 
 Respond in this exact JSON format only, with no other text:
 {{
@@ -110,8 +101,33 @@ Respond in this exact JSON format only, with no other text:
   "choices": ["word1", "word2", "word3", "word4"],
   "correct_index": 0,
   "explanation": "Why this word is correct based on its distinction",
-  "choice_explanations": ["why word1 fits/doesn't", "why word2 fits/doesn't", "why word3 fits/doesn't", "why word4 fits/doesn't"],
   "context_sentence": "A sentence illustrating the word's specific meaning"
+}}
+"""
+
+
+CHOICE_ENRICHMENT_PROMPT = """\
+Given this quiz question and the vocabulary cluster it draws from, analyze each choice.
+
+Cluster "{cluster_title}":
+{cluster_info}
+
+Question stem: {stem}
+Choices: {choices_formatted}
+Correct answer: {correct_word} (index {correct_index})
+
+For each choice, provide:
+- "base_word": the cluster word it derives from (e.g. "heralded" → "herald")
+- "meaning": what this word means (from the cluster definition)
+- "distinction": how it differs from the other cluster words
+- "why": 1 sentence explaining why it does or doesn't fit THIS specific sentence/scenario
+
+JSON only:
+{{
+  "choice_details": [
+    {{"word": "...", "base_word": "...", "meaning": "...", "distinction": "...", "why": "..."}},
+    ...
+  ]
 }}
 """
 
