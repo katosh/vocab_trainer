@@ -96,6 +96,16 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+def _fix_article_before_blank(stem: str, choices: list[str]) -> str:
+    """Replace 'a ___' or 'an ___' with 'a(n) ___' when choices have mixed initial letters."""
+    has_vowel = any(c[0].lower() in "aeiou" for c in choices if c)
+    has_consonant = any(c[0].lower() not in "aeiou" for c in choices if c)
+    if has_vowel and has_consonant:
+        stem = re.sub(r"\b[Aa]n ___", lambda m: m.group(0)[0] + "(n) ___", stem)
+        stem = re.sub(r"\b([Aa]) ___", lambda m: m.group(1) + "(n) ___", stem)
+    return stem
+
+
 def _validate_question(data: dict, target_word: str) -> bool:
     """Validate that the generated question meets requirements."""
     required = {"stem", "choices", "correct_index", "explanation", "context_sentence"}
@@ -122,6 +132,8 @@ def _validate_question(data: dict, target_word: str) -> bool:
     ctx = data.get("context_sentence", "").lower()
     if target_word.lower() not in ctx:
         return False
+    # Auto-fix article before blank
+    data["stem"] = _fix_article_before_blank(data["stem"], data["choices"])
     return True
 
 

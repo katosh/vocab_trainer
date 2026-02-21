@@ -7,6 +7,7 @@ import pytest
 
 from vocab_trainer.question_generator import (
     _extract_json,
+    _fix_article_before_blank,
     _pick_question_type,
     _pick_word_cluster,
     _validate_question,
@@ -132,6 +133,45 @@ class TestValidateQuestion:
         d = self._valid_data()
         d["correct_index"] = "zero"
         assert _validate_question(d, "terse") is False
+
+
+class TestFixArticleBeforeBlank:
+    def test_a_with_mixed_choices(self):
+        stem = "She gave a ___ answer."
+        choices = ["elaborate", "terse", "concise", "pithy"]
+        assert _fix_article_before_blank(stem, choices) == "She gave a(n) ___ answer."
+
+    def test_an_with_mixed_choices(self):
+        stem = "He made an ___ observation."
+        choices = ["acute", "sharp", "keen", "incisive"]
+        assert _fix_article_before_blank(stem, choices) == "He made a(n) ___ observation."
+
+    def test_no_change_when_all_consonant(self):
+        stem = "She gave a ___ reply."
+        choices = ["terse", "curt", "blunt", "pithy"]
+        assert _fix_article_before_blank(stem, choices) == "She gave a ___ reply."
+
+    def test_no_change_when_all_vowel(self):
+        stem = "It was an ___ event."
+        choices = ["unusual", "odd", "eerie", "anomalous"]
+        assert _fix_article_before_blank(stem, choices) == "It was an ___ event."
+
+    def test_no_article_before_blank(self):
+        stem = "The ___ report was praised."
+        choices = ["exhaustive", "thorough", "comprehensive", "meticulous"]
+        assert _fix_article_before_blank(stem, choices) == "The ___ report was praised."
+
+    def test_preserves_capitalized_a(self):
+        stem = "A ___ response echoed."
+        choices = ["eloquent", "terse", "pithy", "curt"]
+        assert _fix_article_before_blank(stem, choices) == "A(n) ___ response echoed."
+
+    def test_already_fixed(self):
+        """Stem with a(n) should not be double-fixed."""
+        stem = "She gave a(n) ___ answer."
+        choices = ["elaborate", "terse", "concise", "pithy"]
+        result = _fix_article_before_blank(stem, choices)
+        assert result == "She gave a(n) ___ answer."
 
 
 class TestPickQuestionType:

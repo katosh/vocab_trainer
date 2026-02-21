@@ -28,6 +28,11 @@ why it doesn't fit this specific sentence. Reference the sentence context, not j
 the generic definition.
 6. Provide the full sentence with the answer filled in (for text-to-speech).
 
+ALL four choices MUST be conjugated/inflected identically to fit the blank's grammatical \
+slot. If the sentence needs a past tense verb, make every choice past tense. If it needs \
+an adjective, make every choice an adjective. The student chooses based on MEANING, \
+not grammar.
+
 Respond in this exact JSON format only, with no other text:
 {{
   "stem": "sentence with ___ blank",
