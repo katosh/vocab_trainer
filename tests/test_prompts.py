@@ -63,11 +63,11 @@ class TestPromptTemplates:
         result = FILL_BLANK_PROMPT.format(**self._format_kwargs())
         assert "Being Brief" in result
         assert "terse" in result
-        assert "JSON format" in result
+        assert "Dr. Voss" in result
 
     def test_best_fit_prompt_formats(self):
         result = BEST_FIT_PROMPT.format(**self._format_kwargs())
-        assert "best fit" in result.lower()
+        assert "Dr. Voss" in result
         assert "terse" in result
 
     def test_distinction_prompt_formats(self):
