@@ -84,32 +84,10 @@ class TestQuestions:
         populated_db.save_question(sample_question)
         assert populated_db.get_question_bank_size() == 1
 
-    def test_get_unused_questions(self, populated_db, sample_question):
-        populated_db.save_question(sample_question)
-        unused = populated_db.get_unused_questions(limit=10)
-        assert len(unused) == 1
-        assert unused[0]["target_word"] == "terse"
-
     def test_get_questions_for_word(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
         qs = populated_db.get_questions_for_word("terse")
         assert len(qs) == 1
-
-    def test_record_question_correct(self, populated_db, sample_question):
-        populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=True)
-
-        qs = populated_db.get_questions_for_word("terse")
-        assert qs[0]["times_shown"] == 1
-        assert qs[0]["times_correct"] == 1
-
-    def test_record_question_wrong(self, populated_db, sample_question):
-        populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=False)
-
-        qs = populated_db.get_questions_for_word("terse")
-        assert qs[0]["times_shown"] == 1
-        assert qs[0]["times_correct"] == 0
 
     def test_choice_details_round_trip(self, populated_db):
         """choice_details_json is persisted and retrievable."""
@@ -140,113 +118,143 @@ class TestQuestions:
         assert details[0]["meaning"] == "brief and rude"
         assert details[1]["distinction"] == "skillful compression"
 
-    def test_used_questions_not_in_unused(self, populated_db, sample_question):
+    def test_mark_question_answered(self, populated_db, sample_question):
+        """Answered questions have answered_at set."""
         populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=True)
-        unused = populated_db.get_unused_questions(limit=10)
-        assert len(unused) == 0
+        populated_db.mark_question_answered("test-q-001", 0, True, 2000, 1)
+        qs = populated_db.get_questions_for_word("terse")
+        q = next(q for q in qs if q["id"] == "test-q-001")
+        assert q["answered_at"] is not None
+        assert q["was_correct"] == 1
+        assert q["chosen_index"] == 0
+
+    def test_answered_not_in_ready(self, populated_db, sample_question):
+        """Answered questions don't appear in ready count."""
+        populated_db.save_question(sample_question)
+        assert populated_db.get_ready_question_count() == 1
+        populated_db.mark_question_answered("test-q-001", 0, True)
+        assert populated_db.get_ready_question_count() == 0
+
+
+class TestWordProgress:
+    """Tests for the word_progress SRS table."""
+
+    def test_new_word_no_progress(self, populated_db):
+        r = populated_db.get_word_progress("perspicacious", "")
+        assert r is None
+
+    def test_upsert_creates_progress(self, populated_db):
+        populated_db.upsert_word_progress(
+            word="concise",
+            cluster_title="Being Brief",
+            easiness_factor=2.5,
+            interval_days=1.0,
+            repetitions=1,
+            next_review="2026-02-19T00:00:00+00:00",
+            correct=True,
+        )
+        r = populated_db.get_word_progress("concise", "Being Brief")
+        assert r is not None
+        assert r["easiness_factor"] == 2.5
+        assert r["total_correct"] == 1
+        assert r["total_incorrect"] == 0
+
+    def test_upsert_updates_progress(self, populated_db):
+        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
+        populated_db.upsert_word_progress("concise", "Being Brief", 2.6, 6.0, 2, "2026-02-25T00:00:00+00:00", True)
+
+        r = populated_db.get_word_progress("concise", "Being Brief")
+        assert r["easiness_factor"] == 2.6
+        assert r["interval_days"] == 6.0
+        assert r["total_correct"] == 2
+
+    def test_upsert_incorrect(self, populated_db):
+        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 0, "2026-02-19T00:00:00+00:00", False)
+        r = populated_db.get_word_progress("concise", "Being Brief")
+        assert r["total_incorrect"] == 1
+        assert r["total_correct"] == 0
+
+    def test_set_word_archived(self, populated_db):
+        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
+        populated_db.set_word_archived("concise", "Being Brief", True)
+        r = populated_db.get_word_progress("concise", "Being Brief")
+        assert r["archived"] == 1
+
+    def test_archived_excludes_from_active(self, populated_db):
+        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
+        assert populated_db.get_active_word_count() == 1
+        populated_db.set_word_archived("concise", "Being Brief", True)
+        assert populated_db.get_active_word_count() == 0
 
 
 class TestArchival:
-    """Tests for SRS-interval-based archival."""
+    """Tests for word-cluster-level archival via word_progress."""
 
-    def test_archive_when_interval_reached(self, populated_db, sample_question):
-        """Word archives when SRS interval >= threshold after correct answer."""
+    def test_archive_shows_in_archived_list(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
-        # Simulate a word that has been reviewed many times (interval 25 days)
-        populated_db.upsert_review(
-            "terse", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True
-        )
-        info = populated_db.record_question_shown("test-q-001", correct=True, archive_interval_days=21)
-        assert info["archived"] is True
-        assert "Mastered" in info["reason"]
-
-    def test_no_archive_below_threshold(self, populated_db, sample_question):
-        """Word with short interval stays in rotation."""
-        populated_db.save_question(sample_question)
-        populated_db.upsert_review(
-            "terse", 2.5, 6.0, 2, "2020-01-01T00:00:00+00:00", True
-        )
-        info = populated_db.record_question_shown("test-q-001", correct=True, archive_interval_days=21)
-        assert info["archived"] is False
-
-    def test_no_archive_on_wrong_even_high_interval(self, populated_db, sample_question):
-        """Wrong answer never archives, even with high interval."""
-        populated_db.save_question(sample_question)
-        populated_db.upsert_review(
-            "terse", 2.6, 30.0, 5, "2020-01-01T00:00:00+00:00", True
-        )
-        info = populated_db.record_question_shown("test-q-001", correct=False, archive_interval_days=21)
-        assert info["archived"] is False
-
-    def test_no_archive_first_correct(self, populated_db, sample_question):
-        """First correct answer does NOT archive (no review data yet)."""
-        populated_db.save_question(sample_question)
-        info = populated_db.record_question_shown("test-q-001", correct=True)
-        assert info["archived"] is False
-
-
-class TestLibraryQueries:
-    """Tests for get_active_questions, get_archived_questions, reset_word_due."""
-
-    def test_active_questions_empty_when_never_shown(self, populated_db, sample_question):
-        """Never-shown questions don't appear in active list."""
-        populated_db.save_question(sample_question)
-        assert len(populated_db.get_active_questions()) == 0
-
-    def test_active_questions_appear_after_shown(self, populated_db, sample_question):
-        """Shown, non-archived questions appear in active list with SRS info."""
-        populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=True)
-        populated_db.upsert_review("terse", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
-
-        active = populated_db.get_active_questions()
-        assert len(active) == 1
-        assert active[0]["target_word"] == "terse"
-        assert active[0]["times_shown"] == 1
-        assert active[0]["interval_days"] == 1.0
-        assert active[0]["next_review"] is not None
-
-    def test_active_questions_exclude_archived(self, populated_db, sample_question):
-        """Archived questions don't appear in active list."""
-        populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=True)
-        populated_db.set_question_archived("test-q-001", True)
-        assert len(populated_db.get_active_questions()) == 0
-
-    def test_archived_questions_empty_initially(self, populated_db, sample_question):
-        populated_db.save_question(sample_question)
-        assert len(populated_db.get_archived_questions()) == 0
-
-    def test_archived_questions_appear(self, populated_db, sample_question):
-        populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=True)
-        populated_db.set_question_archived("test-q-001", True)
-        populated_db.upsert_review("terse", 2.5, 25.0, 5, "2026-03-15T00:00:00+00:00", True)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
+        populated_db.set_word_archived("terse", "Being Brief", True)
 
         archived = populated_db.get_archived_questions()
         assert len(archived) == 1
         assert archived[0]["target_word"] == "terse"
 
+    def test_restore_returns_to_active(self, populated_db, sample_question):
+        populated_db.save_question(sample_question)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 6.0, 2, "2020-01-01T00:00:00+00:00", True)
+        populated_db.set_word_archived("terse", "Being Brief", True)
+        populated_db.set_word_archived("terse", "Being Brief", False)
+
+        active = populated_db.get_active_questions()
+        assert len(active) == 1
+        assert active[0]["target_word"] == "terse"
+
+    def test_archived_excluded_from_session(self, populated_db, sample_question):
+        populated_db.save_question(sample_question)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True)
+        populated_db.set_word_archived("terse", "Being Brief", True)
+
+        session_qs = populated_db.get_session_questions(limit=10)
+        assert all(q["target_word"] != "terse" for q in session_qs)
+
+
+class TestLibraryQueries:
+    """Tests for get_active_questions, get_archived_questions, reset_word_due."""
+
+    def test_active_empty_when_no_progress(self, populated_db, sample_question):
+        """No word_progress entries → empty active list."""
+        populated_db.save_question(sample_question)
+        assert len(populated_db.get_active_questions()) == 0
+
+    def test_active_appears_after_progress(self, populated_db, sample_question):
+        """Word-clusters with progress appear in active list."""
+        populated_db.save_question(sample_question)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+
+        active = populated_db.get_active_questions()
+        assert len(active) == 1
+        assert active[0]["target_word"] == "terse"
+        assert active[0]["interval_days"] == 1.0
+        assert active[0]["next_review"] is not None
+
+    def test_archived_questions_empty_initially(self, populated_db, sample_question):
+        populated_db.save_question(sample_question)
+        assert len(populated_db.get_archived_questions()) == 0
+
     def test_reset_word_due(self, populated_db, sample_question):
         """reset_word_due sets next_review to now and interval to 1."""
         populated_db.save_question(sample_question)
-        # Set a future review
-        populated_db.upsert_review("terse", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
-        assert len(populated_db.get_due_words()) == 0
-
-        populated_db.reset_word_due("terse")
-        r = populated_db.get_review("terse")
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
+        populated_db.reset_word_due("terse", "Being Brief")
+        r = populated_db.get_word_progress("terse", "Being Brief")
         assert r["interval_days"] == 1.0
         assert r["repetitions"] == 0
-        # Should now be due
-        assert len(populated_db.get_due_words()) == 1
 
     def test_reset_word_due_case_insensitive(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
-        populated_db.upsert_review("terse", 2.5, 10.0, 3, "2099-01-01T00:00:00+00:00", True)
-        populated_db.reset_word_due("TERSE")
-        r = populated_db.get_review("terse")
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 10.0, 3, "2099-01-01T00:00:00+00:00", True)
+        populated_db.reset_word_due("TERSE", "Being Brief")
+        r = populated_db.get_word_progress("terse", "Being Brief")
         assert r["interval_days"] == 1.0
 
 
@@ -254,55 +262,56 @@ class TestQuestionPools:
     """Tests for review/new question pool queries."""
 
     def test_get_review_questions_due(self, populated_db, sample_question):
-        """Questions for due words with times_shown > 0 appear in review pool."""
+        """Ready questions for due word-clusters appear in review pool."""
         populated_db.save_question(sample_question)
-        # Show the question once
-        populated_db.record_question_shown("test-q-001", correct=True)
-        # Set review as due
-        populated_db.upsert_review(
-            "terse", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True
+        populated_db.upsert_word_progress(
+            "terse", "Being Brief", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True
         )
         review_qs = populated_db.get_review_questions(limit=10)
         assert len(review_qs) == 1
         assert review_qs[0]["id"] == "test-q-001"
 
     def test_get_review_questions_not_due(self, populated_db, sample_question):
-        """Questions for words not yet due don't appear in review pool."""
+        """Questions for not-yet-due word-clusters don't appear in review pool."""
         populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=True)
-        # Set review far in the future
-        populated_db.upsert_review(
-            "terse", 2.5, 1.0, 1, "2099-01-01T00:00:00+00:00", True
+        populated_db.upsert_word_progress(
+            "terse", "Being Brief", 2.5, 1.0, 1, "2099-01-01T00:00:00+00:00", True
         )
         review_qs = populated_db.get_review_questions(limit=10)
         assert len(review_qs) == 0
 
     def test_get_new_questions(self, populated_db, sample_question):
-        """Never-shown questions appear in new pool."""
+        """Ready questions with no word_progress appear in new pool."""
         populated_db.save_question(sample_question)
         new_qs = populated_db.get_new_questions(limit=10)
         assert len(new_qs) == 1
         assert new_qs[0]["id"] == "test-q-001"
 
-    def test_get_new_questions_excludes_shown(self, populated_db, sample_question):
-        """Shown questions don't appear in new pool."""
+    def test_get_new_questions_excludes_progressed(self, populated_db, sample_question):
+        """Questions for word-clusters with progress don't appear in new pool."""
         populated_db.save_question(sample_question)
-        populated_db.record_question_shown("test-q-001", correct=True)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
         new_qs = populated_db.get_new_questions(limit=10)
         assert len(new_qs) == 0
 
-    def test_get_active_word_count(self, populated_db, sample_question):
-        """Active word count is 0 before showing, 1 after."""
+    def test_answered_excluded_from_session(self, populated_db, sample_question):
+        """Answered questions don't appear in session pool."""
+        populated_db.save_question(sample_question)
+        populated_db.mark_question_answered("test-q-001", 0, True)
+        session_qs = populated_db.get_session_questions(limit=10)
+        assert len(session_qs) == 0
+
+    def test_active_word_count(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
         assert populated_db.get_active_word_count() == 0
-        populated_db.record_question_shown("test-q-001", correct=True)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
         assert populated_db.get_active_word_count() == 1
 
-    def test_ready_count_only_new(self, populated_db, sample_question):
-        """Ready count only includes never-shown questions."""
+    def test_ready_count(self, populated_db, sample_question):
+        """Ready count reflects unanswered questions."""
         populated_db.save_question(sample_question)
         assert populated_db.get_ready_question_count() == 1
-        populated_db.record_question_shown("test-q-001", correct=True)
+        populated_db.mark_question_answered("test-q-001", 0, True)
         assert populated_db.get_ready_question_count() == 0
 
 
@@ -310,84 +319,72 @@ class TestWordClusterQuestionCounts:
     def test_returns_all_cluster_words(self, populated_db):
         """Returns a row for every word in clusters with >= 4 words."""
         pairs = populated_db.get_word_cluster_question_counts()
-        # "Being Brief" cluster has 6 words, all should be returned
         words = {p["word"] for p in pairs}
         assert "terse" in words
         assert "concise" in words
         assert len(pairs) == 6
 
-    def test_counts_existing_questions(self, populated_db, sample_question):
-        """Question count reflects banked questions for the word-cluster pair."""
-        populated_db.save_question(sample_question)  # terse in "Being Brief"
+    def test_counts_ready_questions(self, populated_db, sample_question):
+        """Question count reflects only unanswered questions."""
+        populated_db.save_question(sample_question)
         pairs = populated_db.get_word_cluster_question_counts()
         terse = next(p for p in pairs if p["word"] == "terse")
         concise = next(p for p in pairs if p["word"] == "concise")
         assert terse["question_count"] == 1
         assert concise["question_count"] == 0
 
+    def test_answered_excluded_from_count(self, populated_db, sample_question):
+        """Answered questions don't count as ready."""
+        populated_db.save_question(sample_question)
+        populated_db.mark_question_answered("test-q-001", 0, True)
+        pairs = populated_db.get_word_cluster_question_counts()
+        terse = next(p for p in pairs if p["word"] == "terse")
+        assert terse["question_count"] == 0
+
+    def test_archived_excluded(self, populated_db, sample_question):
+        """Archived word-clusters are excluded."""
+        populated_db.save_question(sample_question)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.set_word_archived("terse", "Being Brief", True)
+        pairs = populated_db.get_word_cluster_question_counts()
+        terse_rows = [p for p in pairs if p["word"] == "terse"]
+        assert len(terse_rows) == 0
+
     def test_empty_db(self, tmp_db):
-        """No clusters → empty result."""
         assert tmp_db.get_word_cluster_question_counts() == []
 
 
-class TestReviews:
-    def test_new_word_no_review(self, populated_db):
-        r = populated_db.get_review("perspicacious")
-        assert r is None
+class TestWordClustersNeedingQuestions:
+    def test_active_with_no_ready_question(self, populated_db, sample_question):
+        """Active word-clusters with no unanswered question need questions."""
+        populated_db.save_question(sample_question)
+        # Create progress for terse, answer the question
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.mark_question_answered("test-q-001", 0, True)
 
-    def test_upsert_creates_review(self, populated_db):
-        populated_db.upsert_review(
-            word="concise",
-            easiness_factor=2.5,
-            interval_days=1.0,
-            repetitions=1,
-            next_review="2026-02-19T00:00:00+00:00",
-            correct=True,
-        )
-        r = populated_db.get_review("concise")
-        assert r is not None
-        assert r["easiness_factor"] == 2.5
-        assert r["total_correct"] == 1
-        assert r["total_incorrect"] == 0
+        needing = populated_db.get_word_clusters_needing_questions()
+        words = {n["word"] for n in needing}
+        assert "terse" in words
 
-    def test_upsert_updates_review(self, populated_db):
-        populated_db.upsert_review("concise", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
-        populated_db.upsert_review("concise", 2.6, 6.0, 2, "2026-02-25T00:00:00+00:00", True)
+    def test_active_with_ready_question(self, populated_db, sample_question):
+        """Active word-clusters with a ready question don't need generation."""
+        populated_db.save_question(sample_question)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
 
-        r = populated_db.get_review("concise")
-        assert r["easiness_factor"] == 2.6
-        assert r["interval_days"] == 6.0
-        assert r["total_correct"] == 2
+        needing = populated_db.get_word_clusters_needing_questions()
+        words = {n["word"] for n in needing}
+        assert "terse" not in words
 
-    def test_upsert_incorrect(self, populated_db):
-        populated_db.upsert_review("concise", 2.5, 1.0, 0, "2026-02-19T00:00:00+00:00", False)
-        r = populated_db.get_review("concise")
-        assert r["total_incorrect"] == 1
-        assert r["total_correct"] == 0
+    def test_archived_excluded(self, populated_db, sample_question):
+        """Archived word-clusters don't need questions."""
+        populated_db.save_question(sample_question)
+        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.mark_question_answered("test-q-001", 0, True)
+        populated_db.set_word_archived("terse", "Being Brief", True)
 
-    def test_get_new_words(self, populated_db):
-        # All words should be "new" initially
-        new = populated_db.get_new_words(limit=100)
-        total = populated_db.get_word_count()
-        assert len(new) == total
-
-    def test_get_new_words_excludes_reviewed(self, populated_db):
-        populated_db.upsert_review("concise", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
-        new = populated_db.get_new_words(limit=100)
-        new_words = [w["word"] for w in new]
-        assert "concise" not in new_words
-
-    def test_get_due_words(self, populated_db):
-        # Set a review in the past so it's due
-        populated_db.upsert_review("concise", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True)
-        due = populated_db.get_due_words()
-        assert len(due) == 1
-        assert due[0]["word"] == "concise"
-
-    def test_future_review_not_due(self, populated_db):
-        populated_db.upsert_review("concise", 2.5, 1.0, 1, "2099-01-01T00:00:00+00:00", True)
-        due = populated_db.get_due_words()
-        assert len(due) == 0
+        needing = populated_db.get_word_clusters_needing_questions()
+        words = {n["word"] for n in needing}
+        assert "terse" not in words
 
 
 class TestSessions:
@@ -427,18 +424,15 @@ class TestStats:
         assert stats["total_clusters"] == 1
         assert stats["words_new"] == stats["total_words"]
 
-    def test_stats_with_session(self, populated_db):
-        sid = populated_db.start_session()
-        populated_db.end_session(sid, 10, 7)
-        # Accuracy now comes from reviews table, not sessions
+    def test_stats_with_word_progress(self, populated_db):
+        """Stats accuracy comes from word_progress."""
         from datetime import datetime, timezone
         next_rev = datetime.now(timezone.utc).isoformat()
         for i in range(7):
-            populated_db.upsert_review(f"word{i}", 2.5, 1.0, 1, next_rev, correct=True)
+            populated_db.upsert_word_progress(f"word{i}", "cluster", 2.5, 1.0, 1, next_rev, correct=True)
         for i in range(3):
-            populated_db.upsert_review(f"wrong{i}", 2.5, 1.0, 0, next_rev, correct=False)
+            populated_db.upsert_word_progress(f"wrong{i}", "cluster", 2.5, 1.0, 0, next_rev, correct=False)
         stats = populated_db.get_stats()
-        assert stats["total_sessions"] == 1
         assert stats["total_questions_answered"] == 10
         assert stats["accuracy"] == 70.0
 

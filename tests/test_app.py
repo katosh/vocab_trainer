@@ -5,7 +5,7 @@ import asyncio
 import json
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,12 +26,6 @@ class FakeLLM:
             "choices": ["terse", "concise", "pithy", "laconic"],
             "correct_index": 0,
             "explanation": "Terse implies rudeness.",
-            "choice_explanations": [
-                "Correct: terse implies brevity bordering on rudeness, fitting the cold tone.",
-                "Concise means brief but clear — no negative connotation here.",
-                "Pithy means concise and meaningful — doesn't imply coldness.",
-                "Laconic means using few words, but without the rude edge of terse.",
-            ],
             "context_sentence": "The terse answer was surprisingly brief.",
         })
 
@@ -263,6 +257,9 @@ class TestFullSessionFlow:
             "current_index": 0,
             "total": 0,
             "correct": 0,
+            "target": 1,
+            "seen_ids": {"test-q-001"},
+            "seen_pairs": {("terse", "being brief")},
             "current_question": {
                 **q_data,
                 "choices": ["terse", "concise", "pithy", "laconic"],
@@ -276,8 +273,8 @@ class TestFullSessionFlow:
         client, db, settings = test_app_with_data
         session_id = self._setup_session(db)
 
-        # Patch _get_tts to avoid real TTS calls
-        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS in test")):
+        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS in test")), \
+             patch("vocab_trainer.app._ensure_question_buffer", new_callable=AsyncMock):
             resp = client.post("/api/session/answer", json={
                 "session_id": session_id,
                 "selected_index": 0,
@@ -290,11 +287,17 @@ class TestFullSessionFlow:
         assert data["session_complete"] is True
         assert data["summary"]["accuracy"] == 100.0
 
+        # Should have created word_progress entry
+        wp = db.get_word_progress("terse", "Being Brief")
+        assert wp is not None
+        assert wp["total_correct"] == 1
+
     def test_answer_wrong(self, test_app_with_data):
         client, db, settings = test_app_with_data
         session_id = self._setup_session(db)
 
-        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS in test")):
+        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS in test")), \
+             patch("vocab_trainer.app._ensure_question_buffer", new_callable=AsyncMock):
             resp = client.post("/api/session/answer", json={
                 "session_id": session_id,
                 "selected_index": 2,  # pithy, not terse
@@ -304,185 +307,89 @@ class TestFullSessionFlow:
         assert data["correct"] is False
         assert data["summary"]["accuracy"] == 0.0
 
-
-class TestQuestionBuffer:
-    """Tests for the background question buffer and SRS-based archival."""
-
-    def _make_question(self, word="terse", qid=None):
-        return Question(
-            id=qid or str(uuid.uuid4()),
+    def test_answer_marks_question_answered(self, test_app_with_data):
+        """Answer endpoint marks the question with answered_at."""
+        client, db, settings = test_app_with_data
+        db.save_question(Question(
+            id="test-q-001",
             question_type="fill_blank",
-            stem="The ___ reply was cold.",
+            stem="Her ___ reply left no room.",
             choices=["terse", "concise", "pithy", "laconic"],
             correct_index=0,
-            correct_word=word,
+            correct_word="terse",
             explanation="Terse implies rudeness.",
-            context_sentence=f"The {word} reply was cold.",
+            context_sentence="Her terse reply was cold.",
             cluster_title="Being Brief",
             llm_provider="test",
-        )
+        ))
+        session_id = self._setup_session(db)
 
-    def test_no_archive_on_first_correct(self, test_app_with_data):
-        """First correct answer does NOT archive (SRS interval too low)."""
-        client, db, _ = test_app_with_data
-        q = db.get_session_questions(limit=1)[0]
-        assert q["archived"] == 0
+        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS")), \
+             patch("vocab_trainer.app._ensure_question_buffer", new_callable=AsyncMock):
+            client.post("/api/session/answer", json={
+                "session_id": session_id,
+                "selected_index": 0,
+            })
 
-        info = db.record_question_shown(q["id"], correct=True)
-        assert info["archived"] is False
+        q = db.get_questions_for_word("terse")
+        answered = [r for r in q if r["answered_at"] is not None]
+        assert len(answered) >= 1
 
-    def test_no_archive_on_first_wrong(self, test_app_with_data):
-        """Wrong answer does not archive."""
-        client, db, _ = test_app_with_data
-        q = db.get_session_questions(limit=1)[0]
-
-        info = db.record_question_shown(q["id"], correct=False)
-        assert info["archived"] is False
-
-    def test_archived_excluded_from_session(self, test_app_with_data):
-        """Archived questions are not returned by get_session_questions."""
-        client, db, _ = test_app_with_data
-        q = db.get_session_questions(limit=1)[0]
-
-        db.set_question_archived(q["id"], True)
-        remaining = db.get_session_questions(limit=10)
-        assert all(r["id"] != q["id"] for r in remaining)
-
-    def test_unarchive_keeps_srs_data(self, test_app_with_data):
-        """Un-archiving preserves SRS data; word doesn't re-archive without high interval."""
-        client, db, _ = test_app_with_data
-        q = db.get_session_questions(limit=1)[0]
-
-        # Set a high interval and archive
-        db.upsert_review("terse", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
-        db.record_question_shown(q["id"], correct=True)  # archives (interval >= 21)
-        db.set_question_archived(q["id"], False)  # un-archive
-
-        # Reset review interval low — should NOT re-archive
-        db.upsert_review("terse", 2.5, 6.0, 2, "2020-01-01T00:00:00+00:00", True)
-        info = db.record_question_shown(q["id"], correct=True)
-        assert info["archived"] is False
-
-    def test_archive_override_via_api(self, test_app_with_data):
-        """POST /api/question/{id}/archive toggles archive status."""
+    def test_answer_includes_archive_info(self, test_app_with_data):
+        """Answer response includes archive info with word+cluster."""
         client, db, settings = test_app_with_data
-        settings.min_ready_questions = 0  # disable buffer so it doesn't regenerate
-        q = db.get_session_questions(limit=1)[0]
-
-        # Archive via API
-        resp = client.post(f"/api/question/{q['id']}/archive", json={"archived": True})
-        assert resp.status_code == 200
-        assert resp.json()["archived"] is True
-        # get_ready_question_count now counts times_shown=0 only; question was never shown
-        # so archiving it removes it from the new pool
-        assert db.get_ready_question_count() == 0
-
-        # Un-archive via API
-        resp = client.post(f"/api/question/{q['id']}/archive", json={"archived": False})
-        assert resp.status_code == 200
-        assert resp.json()["archived"] is False
-        assert db.get_ready_question_count() == 1
-
-    def test_answer_response_includes_archive_info(self, test_app_with_data):
-        """The answer API response includes archive info with SRS-based archival."""
-        client, db, settings = test_app_with_data
-        settings.session_size = 1
         settings.archive_interval_days = 21
+        # Pre-set high interval so it archives
+        db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
 
-        # Set up a review with interval >= 21 so it will archive on correct
-        db.upsert_review("terse", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
+        session_id = self._setup_session(db)
 
-        session_id = db.start_session()
-        q = db.get_session_questions(limit=1)[0]
-        app_module._active_sessions[session_id] = {
-            "questions": [q],
-            "current_index": 0,
-            "total": 0,
-            "correct": 0,
-            "current_question": {
-                "id": q["id"],
-                "correct_index": q["correct_index"],
-                "correct_word": q["target_word"],
-                "explanation": q["explanation"],
-                "context_sentence": q["context_sentence"],
-            },
-        }
-
-        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS")):
+        with patch("vocab_trainer.app._get_tts", side_effect=RuntimeError("no TTS")), \
+             patch("vocab_trainer.app._ensure_question_buffer", new_callable=AsyncMock):
             resp = client.post("/api/session/answer", json={
                 "session_id": session_id,
                 "selected_index": 0,  # correct
+                "time_seconds": 2.0,
             })
         assert resp.status_code == 200
         data = resp.json()
         assert "archive" in data
-        assert data["archive"]["archived"] is True
-        assert data["archive"]["question_id"] == q["id"]
+        assert data["archive"]["word"] == "terse"
+        assert data["archive"]["cluster_title"] == "Being Brief"
 
-    def test_buffer_triggers_generation(self, test_app_with_data):
-        """When ready count drops below min, _ensure_question_buffer schedules generation."""
+
+class TestWordProgressAPI:
+    """Tests for the word-progress archive endpoint."""
+
+    def test_archive_word(self, test_app_with_data):
         client, db, settings = test_app_with_data
-        settings.min_ready_questions = 3
+        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
 
-        # We have 1 question (never shown), need 3 → should trigger
-        generated = []
+        resp = client.post("/api/word-progress/archive", json={
+            "word": "terse",
+            "cluster_title": "Being Brief",
+            "archived": True,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["archived"] is True
 
-        async def mock_generate_batch(llm, db, count=10, **kw):
-            for i in range(count):
-                q = self._make_question()
-                db.save_question(q)
-                generated.append(q)
-            return generated
+        wp = db.get_word_progress("terse", "Being Brief")
+        assert wp["archived"] == 1
 
-        with patch("vocab_trainer.app.generate_batch", side_effect=mock_generate_batch):
-            # Run the buffer check
-            asyncio.get_event_loop().run_until_complete(
-                app_module._ensure_question_buffer()
-            )
-            # Let the background task complete
-            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.1))
-
-        assert len(generated) == 2  # had 1, need 3 → generate 2
-        assert db.get_ready_question_count() == 3
-
-    def test_buffer_no_generation_when_sufficient(self, test_app_with_data):
-        """No generation triggered when ready count >= min."""
+    def test_restore_word(self, test_app_with_data):
         client, db, settings = test_app_with_data
-        settings.min_ready_questions = 1
+        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.set_word_archived("terse", "Being Brief", True)
 
-        # We have 1 question (never shown), need 1 → should NOT trigger
-        with patch("vocab_trainer.app.generate_batch") as mock_gen:
-            asyncio.get_event_loop().run_until_complete(
-                app_module._ensure_question_buffer()
-            )
-            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.1))
-            mock_gen.assert_not_called()
-
-    def test_stats_include_active_words(self, test_app_with_data):
-        """Stats API returns active_words count."""
-        client, db, _ = test_app_with_data
-        resp = client.get("/api/stats")
+        resp = client.post("/api/word-progress/archive", json={
+            "word": "terse",
+            "cluster_title": "Being Brief",
+            "archived": False,
+        })
+        assert resp.status_code == 200
         data = resp.json()
-        assert "active_words" in data
-        assert "new_questions" in data
-        assert data["active_words"] == 0
-        assert data["new_questions"] == 1  # 1 never-shown question
-
-    def test_stats_ready_and_archived(self, test_app_with_data):
-        """Stats API returns ready and archived question counts."""
-        client, db, _ = test_app_with_data
-        resp = client.get("/api/stats")
-        data = resp.json()
-        assert data["questions_ready"] == 1
-        assert data["questions_archived"] == 0
-
-        # Archive the question
-        q = db.get_session_questions(limit=1)[0]
-        db.set_question_archived(q["id"], True)
-        resp = client.get("/api/stats")
-        data = resp.json()
-        assert data["questions_ready"] == 0
-        assert data["questions_archived"] == 1
+        assert data["archived"] is False
 
 
 class TestLibraryAPI:
@@ -494,11 +401,9 @@ class TestLibraryAPI:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_active_with_shown_question(self, test_app_with_data):
+    def test_active_with_progress(self, test_app_with_data):
         client, db, _ = test_app_with_data
-        q = db.get_session_questions(limit=1)[0]
-        db.record_question_shown(q["id"], correct=True)
-        db.upsert_review("terse", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
 
         resp = client.get("/api/questions/active")
         assert resp.status_code == 200
@@ -515,10 +420,8 @@ class TestLibraryAPI:
 
     def test_archived_with_data(self, test_app_with_data):
         client, db, settings = test_app_with_data
-        settings.min_ready_questions = 0
-        q = db.get_session_questions(limit=1)[0]
-        db.record_question_shown(q["id"], correct=True)
-        db.set_question_archived(q["id"], True)
+        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.set_word_archived("terse", "Being Brief", True)
 
         resp = client.get("/api/questions/archived")
         assert resp.status_code == 200
@@ -528,15 +431,41 @@ class TestLibraryAPI:
 
     def test_reset_due(self, test_app_with_data):
         client, db, _ = test_app_with_data
-        db.upsert_review("terse", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
-        assert len(db.get_due_words()) == 0
+        db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
 
-        resp = client.post("/api/questions/reset-due", json={"word": "terse"})
+        resp = client.post("/api/questions/reset-due", json={
+            "word": "terse",
+            "cluster_title": "Being Brief",
+        })
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
-        assert len(db.get_due_words()) == 1
+        wp = db.get_word_progress("terse", "Being Brief")
+        assert wp["interval_days"] == 1.0
 
     def test_reset_due_missing_word(self, test_app):
         client, _, _ = test_app
         resp = client.post("/api/questions/reset-due", json={"word": ""})
         assert resp.status_code == 400
+
+    def test_stats_include_active_words(self, test_app_with_data):
+        """Stats API returns active_words count."""
+        client, db, _ = test_app_with_data
+        resp = client.get("/api/stats")
+        data = resp.json()
+        assert "active_words" in data
+        assert data["active_words"] == 0
+
+    def test_stats_ready_and_archived(self, test_app_with_data):
+        """Stats API returns ready and archived counts."""
+        client, db, _ = test_app_with_data
+        resp = client.get("/api/stats")
+        data = resp.json()
+        assert data["questions_ready"] == 1
+        assert data["questions_archived"] == 0
+
+        # Archive the word-cluster
+        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.set_word_archived("terse", "Being Brief", True)
+        resp = client.get("/api/stats")
+        data = resp.json()
+        assert data["questions_archived"] == 1

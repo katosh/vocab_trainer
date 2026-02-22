@@ -380,7 +380,7 @@ async def generate_question(
         question_type = _pick_question_type()
 
     # Get enrichment words
-    enrichment = db.get_new_words(limit=random.randint(5, 10))
+    enrichment = db.get_random_words(limit=random.randint(5, 10))
 
     # Format prompt
     prompt_template = PROMPTS[question_type]
@@ -447,14 +447,35 @@ async def generate_batch(
     db: Database,
     count: int = 10,
     target_words: list[str] | None = None,
+    target_pairs: list[tuple[str, str]] | None = None,
 ) -> list[Question]:
-    """Generate a batch of questions and save to database."""
+    """Generate a batch of questions and save to database.
+
+    target_pairs: list of (word, cluster_title) to generate for specific
+    word-cluster combinations (e.g. refilling after a question is answered).
+    """
     questions: list[Question] = []
 
+    # Generate for specific (word, cluster) pairs first
+    if target_pairs:
+        for word, cluster_title in target_pairs:
+            cluster = db.get_cluster_by_title(cluster_title)
+            if not cluster:
+                continue
+            cw = db.get_cluster_words(cluster["id"])
+            word_info = next((w for w in cw if w["word"].lower() == word.lower()), None)
+            if not word_info:
+                continue
+            q = await generate_question(llm, db, cluster=cluster, target_word_info=word_info)
+            if q:
+                db.save_question(q)
+                questions.append(q)
+            else:
+                _log.warning("Batch: failed to generate for '%s' in '%s'", word, cluster_title)
+
     if target_words:
-        # Generate questions for specific words
+        # Generate questions for specific words (legacy)
         for word in target_words:
-            # Find the cluster containing this word
             all_clusters = db.get_all_clusters()
             for cl in all_clusters:
                 cw = db.get_cluster_words(cl["id"])
@@ -469,8 +490,8 @@ async def generate_batch(
                     break
             if len(questions) >= count:
                 break
-    else:
-        # Generate random questions
+    elif not target_pairs:
+        # Generate random questions (only if no targeted generation)
         for i in range(count):
             q = await generate_question(llm, db)
             if q:
