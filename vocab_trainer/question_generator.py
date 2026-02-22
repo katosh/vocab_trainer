@@ -166,20 +166,26 @@ async def _enrich_choices(
 
     for attempt in range(ENRICHMENT_RETRIES):
         try:
+            _log.info("  Enrich choices (attempt %d/%d)", attempt + 1, ENRICHMENT_RETRIES)
             response = await llm.generate(prompt, temperature=0.3)
             parsed = _extract_json(response)
             if parsed is None:
+                _log.info("  Enrich: no valid JSON in response")
                 continue
             details = parsed.get("choice_details", [])
             if not isinstance(details, list) or len(details) != len(data["choices"]):
+                _log.info("  Enrich: wrong number of details (%s)", len(details) if isinstance(details, list) else "n/a")
                 continue
             # Validate each detail has required fields
             required = {"word", "base_word", "meaning", "distinction", "why"}
             if all(required.issubset(d.keys()) for d in details):
+                _log.info("  Enrich: OK")
                 return details
-        except Exception:
-            pass
+            _log.info("  Enrich: missing fields in details")
+        except Exception as e:
+            _log.info("  Enrich: error — %s", e)
 
+    _log.info("  Enrich: falling back to DB lookup")
     # Fallback: stem-based lookup (no why field from LLM)
     from vocab_trainer.db import _lookup_cluster_word
 
@@ -238,14 +244,21 @@ async def generate_question(
     )
 
     # Try generation with retries
+    target = target_word_info["word"]
     for attempt in range(MAX_RETRIES):
         try:
+            _log.info("Generate %s for '%s' (attempt %d/%d)",
+                       question_type, target, attempt + 1, MAX_RETRIES)
             response = await llm.generate(prompt, temperature=0.7)
             data = _extract_json(response)
             if data is None:
+                _log.info("  Step 1 failed: no valid JSON in response")
                 continue
-            if not _validate_question(data, target_word_info["word"]):
+            if not _validate_question(data, target):
+                _log.info("  Step 1 failed: validation rejected question")
                 continue
+
+            _log.info("  Step 1 OK — question generated")
 
             # Step 2: enrich choices via second LLM call (falls back to
             # stem-based lookup if the enrichment call fails)
@@ -253,6 +266,7 @@ async def generate_question(
                 llm, cluster, cluster_words, data,
             )
 
+            _log.info("  Done: %s '%s'", question_type, target)
             return Question(
                 id=str(uuid.uuid4()),
                 question_type=question_type,
@@ -294,7 +308,8 @@ async def generate_batch(
                     if q:
                         db.save_question(q)
                         questions.append(q)
-                        _log.debug("[%d/%d] %s: %s", len(questions), count, q.question_type, q.correct_word)
+                    else:
+                        _log.warning("Batch [%d/%d]: failed to generate for '%s'", len(questions), count, word)
                     break
             if len(questions) >= count:
                 break
@@ -305,6 +320,7 @@ async def generate_batch(
             if q:
                 db.save_question(q)
                 questions.append(q)
-                _log.debug("[%d/%d] %s: %s", len(questions), count, q.question_type, q.correct_word)
+            else:
+                _log.warning("Batch [%d/%d]: generation attempt %d returned nothing", len(questions), count, i + 1)
 
     return questions
