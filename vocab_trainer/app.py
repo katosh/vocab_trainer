@@ -20,8 +20,8 @@ from vocab_trainer.db import Database
 from vocab_trainer.models import Question
 from vocab_trainer.parsers.distinctions_parser import parse_distinctions_file
 from vocab_trainer.parsers.vocabulary_parser import parse_vocabulary_file
-from vocab_trainer.question_generator import generate_batch, generate_question
-from vocab_trainer.srs import quality_from_answer, record_review, select_session_words
+from vocab_trainer.question_generator import generate_batch
+from vocab_trainer.srs import quality_from_answer, record_review
 
 app = FastAPI(title="Vocab Trainer")
 
@@ -70,14 +70,29 @@ def _get_tts():
 
 
 _bg_generating = False
+_shutting_down = False
 _bg_log = logging.getLogger("vocab_trainer.bg")
 
 # Background LLM tasks — tracked so chat can cancel them for GPU priority.
 _bg_tasks: set[asyncio.Task] = set()
 
 
+def _active_session_shortfall() -> int:
+    """How many more questions active sessions need beyond what they have."""
+    total = 0
+    for sess in _active_sessions.values():
+        have = len(sess["questions"]) - sess["current_index"]
+        want = sess.get("target", 0)
+        total += max(0, want - have)
+    return total
+
+
 async def _ensure_question_buffer():
-    """Kick off background generation if the non-archived bank is too low."""
+    """Kick off background generation if the non-archived bank is too low.
+
+    Accounts for active sessions that haven't been fully filled yet,
+    so the buffer target is: min_ready_questions + session shortfall.
+    """
     global _bg_generating
     if _bg_generating:
         _bg_log.debug("Buffer check: skipped (generation already running)")
@@ -85,10 +100,13 @@ async def _ensure_question_buffer():
     db = get_db()
     s = get_settings()
     ready = db.get_ready_question_count()
-    _bg_log.info("Buffer check: %d ready, %d required", ready, s.min_ready_questions)
-    if ready >= s.min_ready_questions:
+    shortfall = _active_session_shortfall()
+    target = s.min_ready_questions + shortfall
+    _bg_log.info("Buffer check: %d ready, %d required (buffer %d + session %d)",
+                 ready, target, s.min_ready_questions, shortfall)
+    if ready >= target:
         return
-    need = s.min_ready_questions - ready
+    need = target - ready
     _bg_generating = True
     task = asyncio.create_task(_generate_in_background(need))
     _bg_tasks.add(task)
@@ -97,6 +115,7 @@ async def _ensure_question_buffer():
 
 async def _generate_in_background(count: int):
     global _bg_generating
+    cancelled = False
     try:
         _bg_log.info("Background generation: creating %d questions", count)
         db = get_db()
@@ -107,90 +126,17 @@ async def _generate_in_background(count: int):
             len(questions), db.get_ready_question_count(),
         )
     except asyncio.CancelledError:
-        _bg_log.info("Background generation cancelled (chat priority)")
+        _bg_log.info("Background generation cancelled (session/chat priority)")
+        cancelled = True
     except Exception as e:
         _bg_log.warning("Background generation failed: %s", e)
     finally:
         _bg_generating = False
-        try:
-            await _ensure_question_buffer()
-        except Exception:
-            pass  # DB may be closed during shutdown
-
-
-_pregen_log = logging.getLogger("vocab_trainer.pregen")
-
-
-async def _pregenerate_session_questions(session_id: int, pending_indices: list[int]):
-    """Generate pending session questions sequentially in queue order.
-
-    pending_indices is already sorted by session position, so the
-    next question the user will need is always generated first.
-    Only this task calls the LLM — _get_next_question just waits.
-    Cancelled when a chat request needs GPU priority; the remaining
-    indices are re-queued on resume.
-    """
-    llm = _get_llm()
-    db = get_db()
-
-    try:
-        for idx in pending_indices:
-            session = _active_sessions.get(session_id)
-            if session is None:
-                _pregen_log.info("Session %d gone, stopping pre-generation", session_id)
-                return
-
-            q_data = session["questions"][idx]
-            if "pending_cluster" not in q_data:
-                continue  # Already handled
-
-            cluster, word_info = q_data.pop("pending_cluster"), q_data.pop("pending_word")
-            q_data["generating"] = True
+        if not cancelled:
             try:
-                q = await generate_question(
-                    llm, db,
-                    cluster=cluster,
-                    target_word_info=word_info,
-                )
-                if q:
-                    db.save_question(q)
-                    session["questions"][idx] = {
-                        "id": q.id,
-                        "question_type": q.question_type,
-                        "stem": q.stem,
-                        "choices_json": json.dumps(q.choices),
-                        "correct_index": q.correct_index,
-                        "correct_word": q.correct_word,
-                        "explanation": q.explanation,
-                        "context_sentence": q.context_sentence,
-                        "cluster_title": q.cluster_title,
-                        "choice_explanations_json": json.dumps(q.choice_explanations),
-                        "choice_details_json": json.dumps(q.choice_details),
-                    }
-                    _pregen_log.info("Pre-generated question %d/%d for session %d",
-                                     idx + 1, len(session["questions"]), session_id)
-                else:
-                    q_data.pop("generating", None)
-                    q_data["generation_failed"] = True
-                    _pregen_log.warning("Pre-generation returned None for index %d", idx)
-            except asyncio.CancelledError:
-                # Put the pending data back so it can be retried
-                q_data.pop("generating", None)
-                q_data["pending_cluster"] = cluster
-                q_data["pending_word"] = word_info
-                raise
-            except Exception as e:
-                _pregen_log.warning("Pre-generation failed for index %d: %s", idx, e)
-                q_data.pop("generating", None)
-                q_data["generation_failed"] = True
-    except asyncio.CancelledError:
-        _pregen_log.info("Session %d pre-generation cancelled (chat priority)", session_id)
-        # Re-queue remaining pending indices after chat completes
-        remaining = [i for i in pending_indices if "pending_cluster" in
-                     (_active_sessions.get(session_id, {}).get("questions", [{}] * (i + 1))[i])]
-        if remaining and _active_sessions.get(session_id):
-            _pregen_log.info("Will resume %d pending questions after chat", len(remaining))
-            _active_sessions[session_id]["_resume_indices"] = remaining
+                await _ensure_question_buffer()
+            except Exception:
+                pass  # DB may be closed during shutdown
 
 
 def _auto_import_if_changed(db: Database, settings: Settings) -> None:
@@ -231,6 +177,13 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    global _shutting_down
+    _shutting_down = True
+    # Cancel all background LLM tasks and give them 2s to clean up
+    for t in list(_bg_tasks):
+        t.cancel()
+    if _bg_tasks:
+        await asyncio.wait(list(_bg_tasks), timeout=2)
     if _db:
         _db.close()
 
@@ -242,17 +195,20 @@ static_dir = Path(__file__).parent / "static"
 
 @app.get("/")
 async def index():
-    return FileResponse(static_dir / "index.html")
+    return FileResponse(static_dir / "index.html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/style.css")
 async def style():
-    return FileResponse(static_dir / "style.css", media_type="text/css")
+    return FileResponse(static_dir / "style.css", media_type="text/css",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/app.js")
 async def script():
-    return FileResponse(static_dir / "app.js", media_type="application/javascript")
+    return FileResponse(static_dir / "app.js", media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
 
 # ── API: Stats ────────────────────────────────────────────────────────────
@@ -316,9 +272,7 @@ async def api_generate(request: Request):
 async def api_session_start():
     db = get_db()
     s = get_settings()
-
-    # Start replenishing if needed (runs in background)
-    await _ensure_question_buffer()
+    _session_log = logging.getLogger("vocab_trainer.session")
 
     session_id = db.start_session()
 
@@ -328,6 +282,7 @@ async def api_session_start():
     questions_data = list(review_qs)
     review_count = len(questions_data)
     seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
+    _session_log.info("Session %d: %d review questions loaded", session_id, review_count)
 
     # 2. Fill remaining slots (up to session_size) with new banked questions
     new_count = 0
@@ -339,68 +294,41 @@ async def api_session_start():
                 questions_data.append(q)
                 seen_words.add(q["target_word"].lower())
                 new_count += 1
+    _session_log.info("Session %d: %d new questions loaded", session_id, new_count)
 
     # 3. Fill remaining slots with unseen questions for already-active words
     remaining_slots = max(0, s.session_size - len(questions_data))
+    reinforce_count = 0
     if remaining_slots > 0:
         active_qs = db.get_active_word_new_questions(limit=remaining_slots, exclude_words=seen_words)
         for q in active_qs:
             if q["target_word"].lower() not in seen_words:
                 questions_data.append(q)
                 seen_words.add(q["target_word"].lower())
+                reinforce_count += 1
+    _session_log.info("Session %d: %d reinforcement questions loaded", session_id, reinforce_count)
 
     # Shuffle banked questions for variety
     random.shuffle(questions_data)
 
-    # 4. Build generation queue for remaining slots (ordered, not shuffled)
-    pending_queue: list[dict] = []
-    remaining_slots = max(0, s.session_size - len(questions_data))
-    if remaining_slots > 0:
-        targets = select_session_words(db, remaining_slots + 10)
-        all_clusters = db.get_all_clusters()
-        for word in targets:
-            if word.lower() in seen_words:
-                continue
-            for cl in all_clusters:
-                cw = db.get_cluster_words(cl["id"])
-                word_info = next((w for w in cw if w["word"].lower() == word.lower()), None)
-                if word_info and len(cw) >= 4:
-                    pending_queue.append({
-                        "pending_cluster": cl,
-                        "pending_word": word_info,
-                    })
-                    seen_words.add(word.lower())
-                    new_count += 1
-                    break
-            if len(pending_queue) >= remaining_slots:
-                break
-
-    if not questions_data and not pending_queue:
+    if not questions_data and db.get_cluster_count() == 0:
         return {"error": "No questions available. Import vocabulary and generate questions first.", "session_id": None}
-
-    # Banked questions first (shuffled), then pending questions in generation
-    # order. This gives pre-generation maximum lead time: the first pending
-    # question won't be needed until all banked ones are served.
-    final: list[dict] = questions_data + pending_queue
 
     # Store session state
     _active_sessions[session_id] = {
-        "questions": final,
+        "questions": questions_data,
         "current_index": 0,
         "total": 0,
         "correct": 0,
         "review_count": review_count,
         "new_count": new_count,
         "target": s.session_size,
+        "seen_ids": {q["id"] for q in questions_data},
+        "seen_words": seen_words,
     }
 
-    # Background task generates pending questions sequentially —
-    # indices are in session order so nearest-needed is generated first.
-    pending_indices = [i for i, q in enumerate(final) if "pending_cluster" in q]
-    if pending_indices:
-        task = asyncio.create_task(_pregenerate_session_questions(session_id, pending_indices))
-        _bg_tasks.add(task)
-        task.add_done_callback(_bg_tasks.discard)
+    # Top up the DB question bank in the background
+    await _ensure_question_buffer()
 
     # Return first question
     return await _get_next_question(session_id)
@@ -470,32 +398,87 @@ async def api_session_answer(request: Request):
         "explanation_audio_hash": explanation_audio_hash,
         "context_audio_hash": context_audio_hash,
         "archive": archive_info,
-        "session_progress": {
-            "answered": session["total"],
-            "correct": session["correct"],
-            "remaining": len(session["questions"]) - session["current_index"],
-            "target": session.get("target", len(session["questions"])),
-        },
+        "session_progress": _session_progress(session),
     }
 
     # Advance to next question
     session["current_index"] += 1
     if session["current_index"] >= len(session["questions"]):
-        # Session complete
-        db.end_session(session_id, session["total"], session["correct"])
-        result["session_complete"] = True
-        result["summary"] = {
-            "total": session["total"],
-            "correct": session["correct"],
-            "accuracy": round(session["correct"] / max(session["total"], 1) * 100, 1),
-            "review_count": session.get("review_count", 0),
-            "new_count": session.get("new_count", 0),
-        }
-        del _active_sessions[session_id]
+        # Try loading more from the DB before ending
+        more = _load_more_questions(db, s, session)
+        if more:
+            session["questions"].extend(more)
+
+    if session["current_index"] >= len(session["questions"]):
+        if _bg_generating:
+            # More questions are being generated — don't end yet
+            result["session_complete"] = False
+            result["generating"] = True
+        else:
+            # Session complete — no more questions available
+            db.end_session(session_id, session["total"], session["correct"])
+            result["session_complete"] = True
+            result["summary"] = {
+                "total": session["total"],
+                "correct": session["correct"],
+                "accuracy": round(session["correct"] / max(session["total"], 1) * 100, 1),
+                "review_count": session.get("review_count", 0),
+                "new_count": session.get("new_count", 0),
+            }
+            del _active_sessions[session_id]
     else:
         result["session_complete"] = False
 
     return result
+
+
+def _session_progress(session: dict) -> dict:
+    """Build progress dict for a session."""
+    target = session.get("target", len(session["questions"]))
+    idx = session["current_index"]
+    has_next = idx < len(session["questions"])
+    ready = max(0, len(session["questions"]) - idx - 1) if has_next else 0
+    return {
+        "answered": session["total"],
+        "correct": session["correct"],
+        "ready": ready,
+        "target": target,
+        "generating": _bg_generating,
+        "has_next": has_next,
+    }
+
+
+def _load_more_questions(db, settings, session) -> list[dict]:
+    """Load additional questions from the DB, skipping already-seen ones."""
+    seen_ids = session["seen_ids"]
+    seen_words = session["seen_words"]
+    need = max(0, session["target"] - len(session["questions"]))
+    if need <= 0:
+        return []
+    questions: list[dict] = []
+    # 1. Due reviews
+    for q in db.get_review_questions(limit=need):
+        if q["id"] not in seen_ids:
+            questions.append(q)
+            seen_ids.add(q["id"])
+            seen_words.add(q["target_word"].lower())
+    # 2. New words
+    remaining = need - len(questions)
+    if remaining > 0:
+        for q in db.get_new_questions(limit=remaining):
+            if q["id"] not in seen_ids and q["target_word"].lower() not in seen_words:
+                questions.append(q)
+                seen_ids.add(q["id"])
+                seen_words.add(q["target_word"].lower())
+    # 3. Reinforcement
+    remaining = need - len(questions)
+    if remaining > 0:
+        for q in db.get_active_word_new_questions(limit=remaining, exclude_words=seen_words):
+            if q["id"] not in seen_ids:
+                questions.append(q)
+                seen_ids.add(q["id"])
+                seen_words.add(q["target_word"].lower())
+    return questions
 
 
 async def _get_next_question(session_id: int) -> dict:
@@ -506,28 +489,17 @@ async def _get_next_question(session_id: int) -> dict:
     idx = session["current_index"]
 
     if idx >= len(session["questions"]):
-        return {"session_complete": True, "session_id": session_id}
+        # Try loading more from the DB before ending
+        db_reload = get_db()
+        more = _load_more_questions(db_reload, get_settings(), session)
+        if more:
+            session["questions"].extend(more)
+        elif _bg_generating:
+            return {"generating": True, "session_id": session_id}
+        else:
+            return {"session_complete": True, "session_id": session_id}
 
     q_data = session["questions"][idx]
-
-    # Wait for background generation (queued or in-flight).
-    # Never call the LLM here — the single background task owns all
-    # generation so it doesn't compete with Ollama for the GPU.
-    if q_data.get("generating") or "pending_cluster" in q_data:
-        for _ in range(180):  # up to ~90s
-            await asyncio.sleep(0.5)
-            q_data = session["questions"][idx]
-            if not q_data.get("generating") and "pending_cluster" not in q_data:
-                break
-        else:
-            # Timed out or generation failed — skip this question
-            session["current_index"] += 1
-            return await _get_next_question(session_id)
-
-    # Generation failed — skip
-    if q_data.get("generation_failed"):
-        session["current_index"] += 1
-        return await _get_next_question(session_id)
 
     # Parse choices
     choices = q_data.get("choices_json", "[]")
@@ -571,13 +543,7 @@ async def _get_next_question(session_id: int) -> dict:
         "cluster_title": cluster_title,
         "id": q_data.get("id", ""),
         "is_new": not has_review,
-        "progress": {
-            "current": idx + 1,
-            "total": len(session["questions"]),
-            "answered": session["total"],
-            "correct": session["correct"],
-            "target": session.get("target", len(session["questions"])),
-        },
+        "progress": _session_progress(session),
     }
 
     # Store for answer checking
@@ -590,6 +556,46 @@ async def api_session_next(request: Request):
     body = await request.json()
     session_id = body["session_id"]
     return await _get_next_question(session_id)
+
+
+@app.get("/api/session/{session_id}/events")
+async def api_session_events(session_id: int):
+    if session_id not in _active_sessions:
+        raise HTTPException(404, "Session not found")
+
+    async def event_stream():
+        last_progress = None
+        heartbeat_counter = 0
+        while not _shutting_down:
+            if session_id not in _active_sessions:
+                yield f"data: {json.dumps({'type': 'complete'})}\n\n"
+                return
+
+            session = _active_sessions[session_id]
+            db = get_db()
+            s = get_settings()
+            more = _load_more_questions(db, s, session)
+            if more:
+                session["questions"].extend(more)
+
+            progress = _session_progress(session)
+            if progress != last_progress:
+                yield f"data: {json.dumps({'type': 'progress', **progress})}\n\n"
+                last_progress = progress.copy()
+                heartbeat_counter = 0
+            else:
+                heartbeat_counter += 1
+                if heartbeat_counter >= 15:
+                    yield ": heartbeat\n\n"
+                    heartbeat_counter = 0
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/session/finish")
@@ -851,14 +857,6 @@ async def api_chat(request: Request):
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         finally:
-            # Resume pre-generation for any active sessions
-            for sid, session in _active_sessions.items():
-                resume = session.pop("_resume_indices", None)
-                if resume:
-                    task = asyncio.create_task(
-                        _pregenerate_session_questions(sid, resume))
-                    _bg_tasks.add(task)
-                    task.add_done_callback(_bg_tasks.discard)
             # Resume background buffer generation
             await _ensure_question_buffer()
 

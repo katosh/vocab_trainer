@@ -11,6 +11,8 @@ let pendingAudioTimeout = null;
 let autoCompareEnabled = localStorage.getItem('autoCompare') === 'true';
 let thinkingEnabled = localStorage.getItem('llmThinking') === 'true';
 let narrationQueue = null;
+let sessionEventSource = null;
+let waitingForQuestion = false;
 
 // ── Stick-to-bottom auto-scroll ─────────────────────────────────────────
 // Uses ResizeObserver to detect content growth + wheel events to detect
@@ -118,7 +120,57 @@ function stopAllAudio() {
     // Also stop the built-in TTS player
     const tts = document.getElementById('tts-audio');
     if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
+    narrationToggle.hide();
 }
+
+// ── Narration pause/play toggle (next to chat input) ─────────────────────
+const narrationToggle = {
+    _btn: null,
+    _get() { return this._btn || (this._btn = document.getElementById('chat-narration-toggle')); },
+    _paused: false,
+    _pauseFn: null,   // () => pause current audio
+    _resumeFn: null,  // () => resume current audio
+    _cleanupFn: null, // () => called on hide
+
+    show(pauseFn, resumeFn, cleanupFn) {
+        const btn = this._get();
+        if (!btn) { console.error('narrationToggle: button not found in DOM'); return; }
+        this._paused = false;
+        this._pauseFn = pauseFn;
+        this._resumeFn = resumeFn;
+        this._cleanupFn = cleanupFn;
+        btn.textContent = '⏸';
+        btn.title = 'Pause narration';
+        btn.classList.remove('hidden');
+        btn.onclick = () => this.toggle();
+    },
+
+    toggle() {
+        if (this._paused) {
+            this._paused = false;
+            if (this._resumeFn) this._resumeFn();
+            const btn = this._get();
+            btn.textContent = '⏸';
+            btn.title = 'Pause narration';
+        } else {
+            this._paused = true;
+            if (this._pauseFn) this._pauseFn();
+            const btn = this._get();
+            btn.textContent = '▶';
+            btn.title = 'Resume narration';
+        }
+    },
+
+    hide() {
+        const btn = this._get();
+        btn.classList.add('hidden');
+        btn.onclick = null;
+        if (this._cleanupFn) this._cleanupFn();
+        this._pauseFn = null;
+        this._resumeFn = null;
+        this._cleanupFn = null;
+    },
+};
 
 // ── Navigation ───────────────────────────────────────────────────────────
 
@@ -218,15 +270,22 @@ async function doStartSession() {
             showMessage('dashboard-message', data.error, 'error');
             return;
         }
-        if (data.session_complete && !data.stem) {
+        currentSessionId = data.session_id;
+        connectSessionEvents(data.session_id);
+        if (data.generating) {
+            document.getElementById('quiz-loading-text').textContent = 'Generating question...';
+            waitingForQuestion = true;
+        } else if (data.session_complete && !data.stem) {
             showQuizState('idle');
             switchView('dashboard');
             showMessage('dashboard-message',
                 'No questions available. Generate questions first, or check your LLM provider.', 'error');
+            currentSessionId = null;
+            disconnectSessionEvents();
             return;
+        } else {
+            showQuestion(data);
         }
-        currentSessionId = data.session_id;
-        showQuestion(data);
     } catch (e) {
         showQuizState('idle');
         switchView('dashboard');
@@ -234,11 +293,75 @@ async function doStartSession() {
     }
 }
 
+function connectSessionEvents(sessionId) {
+    disconnectSessionEvents();
+    sessionEventSource = new EventSource(`/api/session/${sessionId}/events`);
+    sessionEventSource.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'progress') {
+            updateProgress(data);
+            if (waitingForQuestion && data.has_next) {
+                waitingForQuestion = false;
+                const nextQ = await api('/api/session/next', 'POST', {
+                    session_id: sessionId,
+                });
+                if (nextQ.generating) {
+                    waitingForQuestion = true;
+                } else {
+                    showQuestion(nextQ);
+                }
+            } else if (waitingForQuestion && !data.has_next && !data.generating) {
+                waitingForQuestion = false;
+                showQuizState('idle');
+                switchView('dashboard');
+                showMessage('dashboard-message',
+                    'Generation failed. Check your LLM provider.', 'error');
+                currentSessionId = null;
+                disconnectSessionEvents();
+            }
+        } else if (data.type === 'complete') {
+            disconnectSessionEvents();
+        }
+    };
+    sessionEventSource.onerror = () => {
+        // EventSource auto-reconnects; nothing to do
+    };
+}
+
+function disconnectSessionEvents() {
+    if (sessionEventSource) {
+        sessionEventSource.close();
+        sessionEventSource = null;
+    }
+    waitingForQuestion = false;
+}
+
 function showQuizState(state) {
     ['idle', 'loading', 'question', 'summary'].forEach(s => {
         const el = document.getElementById(`quiz-${s}`);
         el.classList.toggle('hidden', s !== state);
     });
+    // Show progress bar during loading and question states
+    const progressEl = document.getElementById('session-progress');
+    progressEl.classList.toggle('hidden', state !== 'loading' && state !== 'question');
+}
+
+function updateProgress(p) {
+    const target = p.target;
+    const current = p.answered + 1;
+    const pct = Math.min(100, p.answered / target * 100);
+    document.getElementById('progress-bar').style.width = pct + '%';
+    let text;
+    if (p.answered >= target) {
+        text = `${p.answered} answered (target: ${target})`;
+    } else {
+        text = `Question ${current} of ${target}`;
+    }
+    if (p.ready < target - p.answered && p.generating) {
+        text += ` · ${p.ready} ready`;
+    }
+    if (p.answered > 0) text += ` · ${p.correct}/${p.answered} correct`;
+    document.getElementById('progress-text').textContent = text;
 }
 
 function showQuestion(data) {
@@ -259,19 +382,8 @@ function showQuestion(data) {
     document.getElementById('chat-input').value = '';
     document.getElementById('archive-status').classList.add('hidden');
 
-    // Progress (soft target)
-    const progress = data.progress;
-    const target = progress.target || progress.total;
-    const pct = Math.min(100, (progress.current - 1) / target * 100);
-    document.getElementById('progress-bar').style.width = pct + '%';
-    let progressText;
-    if (progress.answered >= target) {
-        progressText = `${progress.answered} answered (target: ${target})`;
-    } else {
-        progressText = `Question ${progress.current} of ${target}`;
-    }
-    if (progress.answered > 0) progressText += ` | ${progress.correct}/${progress.answered} correct`;
-    document.getElementById('progress-text').textContent = progressText;
+    // Progress (soft target) — SSE pushes live updates
+    updateProgress(data.progress);
 
     // Question type + New/Review badge
     const typeLabels = {
@@ -432,20 +544,11 @@ async function submitAnswer(selectedIndex, questionData) {
 
         // Update progress text (soft target)
         const sp = result.session_progress;
-        const spTarget = sp.target || (sp.answered + sp.remaining);
-        let spText;
-        if (sp.answered >= spTarget) {
-            spText = `${sp.answered} answered (target: ${spTarget}) | ${sp.correct}/${sp.answered} correct`;
-        } else {
-            spText = `${sp.correct}/${sp.answered} correct | ${sp.remaining} remaining`;
-        }
-        document.getElementById('progress-text').textContent = spText;
-        const spPct = Math.min(100, sp.answered / spTarget * 100);
-        document.getElementById('progress-bar').style.width = spPct + '%';
+        updateProgress(sp);
 
         // Show/hide finish button once target is reached
         const finishBtn = document.getElementById('btn-finish');
-        if (sp.answered >= spTarget && !result.session_complete) {
+        if (sp.answered >= sp.target && !result.session_complete) {
             finishBtn.classList.remove('hidden');
         } else {
             finishBtn.classList.add('hidden');
@@ -472,12 +575,16 @@ async function submitAnswer(selectedIndex, questionData) {
                 showSummary(result.summary);
             } else {
                 showQuizState('loading');
-                document.getElementById('quiz-loading-text').textContent = 'Generating question...';
+                document.getElementById('quiz-loading-text').textContent = 'Loading question...';
                 const nextQ = await api('/api/session/next', 'POST', {
                     session_id: currentSessionId,
                 });
-                document.getElementById('quiz-loading-text').textContent = 'Loading question...';
-                showQuestion(nextQ);
+                if (nextQ.generating) {
+                    document.getElementById('quiz-loading-text').textContent = 'Generating question...';
+                    waitingForQuestion = true;
+                } else {
+                    showQuestion(nextQ);
+                }
             }
         };
     } catch (e) {
@@ -509,6 +616,7 @@ async function toggleArchive(questionId, archived) {
 }
 
 function showSummary(summary) {
+    disconnectSessionEvents();
     showQuizState('summary');
     document.getElementById('summary-total').textContent = summary.total;
     document.getElementById('summary-correct').textContent = summary.correct;
@@ -697,19 +805,17 @@ async function narrateText(btn, text) {
         if (result.audio_hash) {
             const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
             activeAudioElements.push(audio);
-            btn.textContent = '\u25A0 Stop';
             btn.disabled = false;
-            audio.onended = () => { btn.textContent = '\u25B6 Narrate'; };
-            btn.onclick = () => {
-                if (audio.paused) {
-                    audio.play();
-                    btn.textContent = '\u25A0 Stop';
-                } else {
-                    audio.pause();
-                    audio.currentTime = 0;
-                    btn.textContent = '\u25B6 Narrate';
-                }
+            audio.onended = () => {
+                btn.textContent = '▶ Narrate';
+                narrationToggle.hide();
             };
+            btn.onclick = () => narrateText(btn, text);
+            btn.textContent = '■ Stop';
+            narrationToggle.show(
+                () => audio.pause(),
+                () => audio.play(),
+            );
             audio.play();
         }
     } catch (e) {
@@ -726,9 +832,12 @@ class NarrationQueue {
         this.currentIndex = 0;
         this.playing = false;
         this.stopped = false;
+        this.paused = false;
         this.flushed = false;
         this.started = false;
         this.previousQueue = previousQueue || null;
+        // Clear old queue's onDone so it doesn't hide the narration toggle
+        if (this.previousQueue) this.previousQueue.onDone = null;
         this.onDone = null;
     }
 
@@ -790,6 +899,22 @@ class NarrationQueue {
         if (this.onDone) { this.onDone(); this.onDone = null; }
     }
 
+    pause() {
+        if (this.stopped) return;
+        this.paused = true;
+        const current = this.sentences[this.currentIndex];
+        if (current && current.audio && !current.audio.paused) {
+            current.audio.pause();
+        }
+        this.playing = false;
+    }
+
+    resume() {
+        if (this.stopped || !this.paused) return;
+        this.paused = false;
+        this._tryPlay();
+    }
+
     _enqueueSentence(text) {
         const clean = text
             .replace(/\*\*(.+?)\*\*/g, '$1')
@@ -823,7 +948,7 @@ class NarrationQueue {
                 audio.onended = () => {
                     this.playing = false;
                     this.currentIndex++;
-                    this._tryPlay();
+                    if (!this.paused) this._tryPlay();
                 };
                 this._tryPlay();
             } else {
@@ -839,7 +964,7 @@ class NarrationQueue {
     }
 
     _tryPlay() {
-        if (this.stopped || this.playing) return;
+        if (this.stopped || this.playing || this.paused) return;
         while (this.currentIndex < this.sentences.length && this.sentences[this.currentIndex].failed) {
             this.currentIndex++;
         }
@@ -858,6 +983,12 @@ class NarrationQueue {
             activeAudioElements = [];
             const tts = document.getElementById('tts-audio');
             if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
+            // Show pause/play toggle as soon as first sentence plays
+            const q = this;
+            narrationToggle.show(
+                () => q.pause(),
+                () => q.resume(),
+            );
         }
         this.playing = true;
         sentence.audio.play().catch(() => {
@@ -889,6 +1020,11 @@ async function sendChatMessage(message) {
     const autoNarrating = autoCompareEnabled;
     if (autoNarrating) {
         narrationQueue = new NarrationQueue(narrationQueue);
+        const q = narrationQueue;
+        narrationToggle.show(
+            () => q.pause(),
+            () => q.resume(),
+        );
     }
 
     appendChatMessage('user', message);
@@ -966,17 +1102,18 @@ async function sendChatMessage(message) {
 
         if (fullResponse) {
             if (autoNarrating && narrationQueue && !narrationQueue.stopped) {
-                // Show stop button — narration is already playing
+                // Narration is playing — show pause/play toggle next to input
                 const bar = document.createElement('div');
                 bar.className = 'chat-msg-actions';
                 const btn = document.createElement('button');
                 btn.className = 'narrate-btn';
-                btn.textContent = '\u25A0 Stop';
+                btn.textContent = '■ Stop';
                 const queue = narrationQueue;
                 const switchToNarrate = () => {
-                    btn.textContent = '\u25B6 Narrate';
+                    btn.textContent = '▶ Narrate';
                     btn.disabled = false;
                     btn.onclick = () => narrateText(btn, fullResponse);
+                    narrationToggle.hide();
                 };
                 btn.onclick = () => {
                     queue.stop();

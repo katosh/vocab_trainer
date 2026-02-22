@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 import uuid
+
+_log = logging.getLogger("vocab_trainer.qgen")
 from typing import TYPE_CHECKING
 
 from vocab_trainer.models import Question
@@ -265,7 +268,7 @@ async def generate_question(
             )
         except Exception as e:
             if attempt == MAX_RETRIES - 1:
-                print(f"  Failed after {MAX_RETRIES} attempts: {e}")
+                _log.warning("Failed after %d attempts: %s", MAX_RETRIES, e)
     return None
 
 
@@ -291,7 +294,7 @@ async def generate_batch(
                     if q:
                         db.save_question(q)
                         questions.append(q)
-                        print(f"  [{len(questions)}/{count}] {q.question_type}: {q.correct_word}")
+                        _log.debug("[%d/%d] %s: %s", len(questions), count, q.question_type, q.correct_word)
                     break
             if len(questions) >= count:
                 break
@@ -302,6 +305,6 @@ async def generate_batch(
             if q:
                 db.save_question(q)
                 questions.append(q)
-                print(f"  [{len(questions)}/{count}] {q.question_type}: {q.correct_word}")
+                _log.debug("[%d/%d] %s: %s", len(questions), count, q.question_type, q.correct_word)
 
     return questions
