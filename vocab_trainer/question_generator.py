@@ -80,8 +80,18 @@ def _pick_word_cluster(db: Database) -> tuple[dict, dict] | None:
 
 
 def _extract_json(text: str) -> dict | None:
-    """Extract JSON object from LLM response, handling markdown code fences."""
-    # Try to find JSON in code fence
+    """Extract JSON object from LLM response, handling markdown code fences.
+
+    Strips ``<think>`` blocks first (Qwen3 reasoning can contain JSON-like
+    fragments that confuse the greedy regex).  Tries code-fenced JSON first,
+    then falls back to matching balanced ``{…}`` blocks — preferring the
+    *last* match, since the LLM often drafts partial JSON before the final
+    answer.
+    """
+    # Strip <think>…</think> blocks that may contain draft JSON
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+    # 1. Try JSON inside a code fence (most reliable)
     m = re.search(r"```(?:json)?\s*\n?({.*?})\s*\n?```", text, re.DOTALL)
     if m:
         try:
@@ -89,15 +99,54 @@ def _extract_json(text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-    # Try to find bare JSON object
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
+    # 2. Find all top-level {…} blocks and try each, last-first
+    candidates = _find_json_objects(text)
+    for candidate in reversed(candidates):
         try:
-            return json.loads(m.group(0))
+            return json.loads(candidate)
         except json.JSONDecodeError:
-            pass
+            continue
 
     return None
+
+
+def _find_json_objects(text: str) -> list[str]:
+    """Find balanced top-level ``{…}`` substrings in *text*."""
+    results: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "{":
+            depth = 0
+            in_str = False
+            escape = False
+            start = i
+            for j in range(i, len(text)):
+                ch = text[j]
+                if escape:
+                    escape = False
+                    continue
+                if ch == "\\":
+                    escape = True
+                    continue
+                if ch == '"' and not escape:
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        results.append(text[start : j + 1])
+                        i = j + 1
+                        break
+            else:
+                # Unbalanced — skip this opening brace
+                i += 1
+        else:
+            i += 1
+    return results
 
 
 def _fix_article_before_blank(stem: str, choices: list[str]) -> str:
@@ -110,38 +159,136 @@ def _fix_article_before_blank(stem: str, choices: list[str]) -> str:
     return stem
 
 
-def _validate_question(data: dict, target_word: str) -> bool:
-    """Validate that the generated question meets requirements."""
+def _is_inflection(candidate: str, base: str) -> bool:
+    """Check if *candidate* is a plausible English inflection of *base*.
+
+    Covers regular suffixes: -s, -es, -ed, -d, -ing, -ly, -er, -est, -tion,
+    and the e-dropping pattern (e.g. "explicate" → "explicating").
+    """
+    if candidate == base:
+        return True
+    # candidate must start with the base (or base minus trailing 'e')
+    if candidate.startswith(base):
+        suffix = candidate[len(base):]
+        return suffix in ("s", "es", "ed", "d", "ing", "ly", "er", "est",
+                          "tion", "ment", "ness", "ous", "ive", "al")
+    # e-dropping: "explicate" → "explicating", "cajole" → "cajoled"
+    if base.endswith("e") and candidate.startswith(base[:-1]):
+        suffix = candidate[len(base) - 1:]
+        return suffix in ("ing", "ed", "er", "est", "ation", "ive",
+                          "ous", "able", "ible")
+    # y→i: "carry" → "carried"
+    if base.endswith("y") and candidate.startswith(base[:-1] + "i"):
+        suffix = candidate[len(base):]
+        return suffix in ("ed", "es", "er", "est", "ness", "ly")
+    return False
+
+
+def _validate_question(data: dict, target_word: str, question_type: str = "fill_blank") -> str | None:
+    """Validate a generated question and auto-fix minor issues.
+
+    Returns ``None`` on success (data is valid and possibly patched in-place),
+    or a human-readable reason string on failure.
+    """
     required = {"stem", "choices", "correct_index", "explanation", "context_sentence"}
-    if not required.issubset(data.keys()):
-        return False
+    missing = required - data.keys()
+    if missing:
+        return f"missing fields: {', '.join(sorted(missing))}"
+
     if not isinstance(data["choices"], list) or len(data["choices"]) != 4:
-        return False
-    if not isinstance(data["correct_index"], int):
-        return False
-    if data["correct_index"] < 0 or data["correct_index"] >= 4:
-        return False
-    # Check the correct choice matches the target word
-    correct_choice = data["choices"][data["correct_index"]].lower().strip()
-    if correct_choice != target_word.lower().strip():
-        return False
+        n = len(data["choices"]) if isinstance(data["choices"], list) else type(data["choices"]).__name__
+        return f"choices must be list of 4 (got {n})"
+
+    # Coerce correct_index from string to int (common LLM mistake)
+    ci = data["correct_index"]
+    if isinstance(ci, str) and ci.strip().isdigit():
+        data["correct_index"] = int(ci.strip())
+        ci = data["correct_index"]
+    if not isinstance(ci, int):
+        return f"correct_index not an int (got {type(ci).__name__}: {ci!r})"
+    if ci < 0 or ci >= 4:
+        return f"correct_index out of range: {ci}"
+
+    # Check the correct choice matches the target word (accept inflected forms)
+    correct_choice = data["choices"][ci].lower().strip()
+    target_lower = target_word.lower().strip()
+    if correct_choice != target_lower:
+        # Try exact match first, then inflection match
+        for i, ch in enumerate(data["choices"]):
+            if ch.lower().strip() == target_lower:
+                data["correct_index"] = i
+                ci = i
+                break
+        else:
+            # Accept inflected forms (e.g. "cajoled" for "cajole")
+            for i, ch in enumerate(data["choices"]):
+                if _is_inflection(ch.lower().strip(), target_lower):
+                    data["correct_index"] = i
+                    ci = i
+                    # Store the base word as correct_word (caller uses target)
+                    break
+            else:
+                choices_str = ", ".join(data["choices"])
+                return (
+                    f"The target word '{target_word}' MUST be one of the 4 choices "
+                    f"and correct_index must point to it. "
+                    f"Your choices were: [{choices_str}] — '{target_word}' is missing."
+                )
+
     # No duplicate choices
     lower_choices = [c.lower().strip() for c in data["choices"]]
     if len(set(lower_choices)) != 4:
-        return False
-    # Stem must have a blank
-    if "___" not in data["stem"] and "___" not in data.get("stem", ""):
-        return False
-    # Context sentence should contain the target word (or a form of it)
+        dupes = [c for c in lower_choices if lower_choices.count(c) > 1]
+        return f"duplicate choices: {set(dupes)}"
+
+    # Stem must have a blank (fill_blank only — best_fit uses "Which word…?" format)
+    if question_type == "fill_blank":
+        stem = data["stem"]
+        # Normalize various blank markers to ___
+        if "___" not in stem:
+            normalized = re.sub(r"_{4,}", "___", stem)   # ____ → ___
+            normalized = re.sub(r"\[blank\]", "___", normalized, flags=re.IGNORECASE)
+            normalized = re.sub(r"\(blank\)", "___", normalized, flags=re.IGNORECASE)
+            if "___" in normalized:
+                data["stem"] = normalized
+            else:
+                return f"stem has no blank marker: {stem[:80]!r}"
+
+    # Context sentence should contain the target word (or a morphological form)
     ctx = data.get("context_sentence", "").lower()
-    if target_word.lower() not in ctx:
-        return False
-    # Auto-fix article before blank
-    data["stem"] = _fix_article_before_blank(data["stem"], data["choices"])
-    return True
+    if target_lower not in ctx:
+        # Accept common morphological suffixes
+        stem_root = target_lower.rstrip("edsying")
+        if len(stem_root) < 3 or not any(stem_root in w for w in ctx.split()):
+            return f"context_sentence missing target word '{target_word}'"
+
+    # Auto-fix article before blank (only relevant for fill_blank)
+    if question_type == "fill_blank":
+        data["stem"] = _fix_article_before_blank(data["stem"], data["choices"])
+    return None
 
 
-ENRICHMENT_RETRIES = 2
+ENRICHMENT_RETRIES = 3
+
+
+def _validate_enrichment(details: list, expected_count: int) -> str | None:
+    """Return None if valid, or an error message describing what's wrong."""
+    if not isinstance(details, list):
+        return f"choice_details must be a list, got {type(details).__name__}"
+    if len(details) != expected_count:
+        return f"expected {expected_count} choice_details, got {len(details)}"
+    required = {"word", "base_word", "meaning", "distinction", "why"}
+    problems = []
+    for i, d in enumerate(details):
+        if not isinstance(d, dict):
+            problems.append(f"  detail[{i}]: expected object, got {type(d).__name__}")
+            continue
+        missing = required - d.keys()
+        if missing:
+            problems.append(f"  detail[{i}] ({d.get('word', '?')}): missing {', '.join(sorted(missing))}")
+    if problems:
+        return "field errors:\n" + "\n".join(problems)
+    return None
 
 
 async def _enrich_choices(
@@ -153,9 +300,10 @@ async def _enrich_choices(
     """Step 2: enrich choices via a second LLM call.
 
     Returns a list of dicts with word, base_word, meaning, distinction, why.
-    Falls back to stem-based lookup on failure.
+    On validation errors, feeds the specific error back to the LLM so it can
+    correct its response.  Falls back to stem-based lookup on total failure.
     """
-    prompt = CHOICE_ENRICHMENT_PROMPT.format(
+    base_prompt = CHOICE_ENRICHMENT_PROMPT.format(
         cluster_title=cluster["title"],
         cluster_info=format_cluster_info(cluster_words),
         stem=data["stem"],
@@ -164,29 +312,31 @@ async def _enrich_choices(
         correct_index=data["correct_index"],
     )
 
+    prompt = base_prompt
     for attempt in range(ENRICHMENT_RETRIES):
         try:
             _log.info("  Enrich choices (attempt %d/%d)", attempt + 1, ENRICHMENT_RETRIES)
             response = await llm.generate(prompt, temperature=0.3)
             parsed = _extract_json(response)
             if parsed is None:
-                _log.info("  Enrich: no valid JSON in response")
+                feedback = "Your response did not contain valid JSON. Respond with ONLY a JSON object, no other text."
+                prompt = base_prompt + "\n\n" + feedback
+                _log.info("  Enrich: no valid JSON — feeding back")
                 continue
+
             details = parsed.get("choice_details", [])
-            if not isinstance(details, list) or len(details) != len(data["choices"]):
-                _log.info("  Enrich: wrong number of details (%s)", len(details) if isinstance(details, list) else "n/a")
+            error = _validate_enrichment(details, len(data["choices"]))
+            if error:
+                prompt = base_prompt + f"\n\nYour previous response had errors:\n{error}\n\nPlease fix and respond with corrected JSON only."
+                _log.info("  Enrich: validation failed — feeding back: %s", error.split('\n')[0])
                 continue
-            # Validate each detail has required fields
-            required = {"word", "base_word", "meaning", "distinction", "why"}
-            if all(required.issubset(d.keys()) for d in details):
-                _log.info("  Enrich: OK")
-                return details
-            _log.info("  Enrich: missing fields in details")
+
+            _log.info("  Enrich: OK")
+            return details
         except Exception as e:
             _log.info("  Enrich: error — %s", e)
 
     _log.info("  Enrich: falling back to DB lookup")
-    # Fallback: stem-based lookup (no why field from LLM)
     from vocab_trainer.db import _lookup_cluster_word
 
     cw_map = {w["word"].lower(): w for w in cluster_words}
@@ -234,7 +384,7 @@ async def generate_question(
 
     # Format prompt
     prompt_template = PROMPTS[question_type]
-    prompt = prompt_template.format(
+    base_prompt = prompt_template.format(
         cluster_title=cluster["title"],
         cluster_info=format_cluster_info(cluster_words),
         target_word=target_word_info["word"],
@@ -243,8 +393,9 @@ async def generate_question(
         enrichment_section=format_enrichment(enrichment),
     )
 
-    # Try generation with retries
+    # Try generation with retries — feed validation errors back to the LLM
     target = target_word_info["word"]
+    prompt = base_prompt
     for attempt in range(MAX_RETRIES):
         try:
             _log.info("Generate %s for '%s' (attempt %d/%d)",
@@ -252,10 +403,15 @@ async def generate_question(
             response = await llm.generate(prompt, temperature=0.7)
             data = _extract_json(response)
             if data is None:
-                _log.info("  Step 1 failed: no valid JSON in response")
+                feedback = "Your response did not contain valid JSON. Respond with ONLY a JSON object, no other text."
+                prompt = base_prompt + "\n\n" + feedback
+                _log.info("  Step 1 failed: no valid JSON — feeding back")
+                _log.debug("  Raw response: %.300s", response)
                 continue
-            if not _validate_question(data, target):
-                _log.info("  Step 1 failed: validation rejected question")
+            reason = _validate_question(data, target, question_type)
+            if reason:
+                prompt = base_prompt + f"\n\nYour previous response had errors: {reason}\nPlease fix and respond with corrected JSON only."
+                _log.info("  Step 1 failed: %s — feeding back", reason)
                 continue
 
             _log.info("  Step 1 OK — question generated")

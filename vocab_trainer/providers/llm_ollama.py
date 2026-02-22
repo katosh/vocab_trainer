@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 
@@ -18,7 +19,8 @@ class OllamaProvider(LLMProvider):
         self.model = model
 
     async def generate(self, prompt: str, temperature: float = 0.7, thinking: bool = True) -> str:
-        log.info("── PROMPT (%s) ──\n%s", self.model, prompt)
+        log.info("LLM request (%s, %d chars)", self.model, len(prompt))
+        log.debug("── PROMPT ──\n%s", prompt)
         t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
@@ -35,17 +37,21 @@ class OllamaProvider(LLMProvider):
             data = resp.json()
         elapsed = time.monotonic() - t0
         response = data["response"]
+        # Strip <think>...</think> blocks (Qwen3 reasoning)
+        response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
         tokens = data.get("eval_count", "?")
-        log.info("── RESPONSE (%.1fs, %s tokens) ──\n%s", elapsed, tokens, response)
+        log.info("LLM response (%.1fs, %s tokens, %d chars)", elapsed, tokens, len(response))
+        log.debug("── RESPONSE ──\n%s", response)
         return response
 
     async def generate_stream(
         self, prompt: str, temperature: float = 0.7, system: str | None = None, thinking: bool = True
     ) -> AsyncIterator[str]:
         """Stream tokens from Ollama, stripping <think>...</think> blocks."""
-        log.info("── STREAM PROMPT (%s) ──\n%s", self.model, prompt)
+        log.info("LLM stream start (%s, %d chars)", self.model, len(prompt))
+        log.debug("── STREAM PROMPT ──\n%s", prompt)
         if system:
-            log.info("── SYSTEM ──\n%s", system)
+            log.debug("── SYSTEM ──\n%s", system)
         t0 = time.monotonic()
         buf = ""
         in_think = False
@@ -106,7 +112,7 @@ class OllamaProvider(LLMProvider):
             yield buf
 
         elapsed = time.monotonic() - t0
-        log.info("── STREAM COMPLETE (%.1fs) ──", elapsed)
+        log.info("LLM stream complete (%.1fs)", elapsed)
 
     def name(self) -> str:
         return f"ollama/{self.model}"

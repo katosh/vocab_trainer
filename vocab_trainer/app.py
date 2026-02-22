@@ -814,13 +814,15 @@ def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
     choices_str = ", ".join(f"{labels[i]}) {c}" for i, c in enumerate(choices))
     chosen = choices[selected_idx] if selected_idx is not None and selected_idx < len(choices) else "?"
 
-    # Build word definitions block
+    # Build word definitions block (meaning, distinction, and per-sentence fit analysis)
     defs_lines = []
     for d in details:
         if d.get("meaning"):
             line = f"  - {d['word']}: {d['meaning']}"
             if d.get("distinction"):
                 line += f" — {d['distinction']}"
+            if d.get("why"):
+                line += f"\n    → In this sentence: {d['why']}"
             defs_lines.append(line)
     defs_block = "\n".join(defs_lines) if defs_lines else ""
 

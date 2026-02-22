@@ -94,46 +94,80 @@ class TestValidateQuestion:
         }
 
     def test_valid(self):
-        assert _validate_question(self._valid_data(), "terse") is True
+        assert _validate_question(self._valid_data(), "terse") is None
 
     def test_missing_field(self):
         d = self._valid_data()
         del d["explanation"]
-        assert _validate_question(d, "terse") is False
+        reason = _validate_question(d, "terse")
+        assert reason is not None
+        assert "missing fields" in reason
 
     def test_wrong_choice_count(self):
         d = self._valid_data()
         d["choices"] = ["terse", "concise", "pithy"]
-        assert _validate_question(d, "terse") is False
+        reason = _validate_question(d, "terse")
+        assert reason is not None
+        assert "choices" in reason
 
     def test_index_out_of_range(self):
         d = self._valid_data()
         d["correct_index"] = 5
-        assert _validate_question(d, "terse") is False
+        reason = _validate_question(d, "terse")
+        assert reason is not None
+        assert "out of range" in reason
 
     def test_negative_index(self):
         d = self._valid_data()
         d["correct_index"] = -1
-        assert _validate_question(d, "terse") is False
+        reason = _validate_question(d, "terse")
+        assert reason is not None
+        assert "out of range" in reason
 
     def test_correct_word_mismatch(self):
         d = self._valid_data()
-        assert _validate_question(d, "concise") is False
+        reason = _validate_question(d, "concise")
+        assert reason is not None
 
     def test_duplicate_choices(self):
         d = self._valid_data()
         d["choices"] = ["terse", "terse", "pithy", "laconic"]
-        assert _validate_question(d, "terse") is False
+        reason = _validate_question(d, "terse")
+        assert reason is not None
+        assert "duplicate" in reason
 
     def test_case_insensitive_word_match(self):
         d = self._valid_data()
         d["choices"][0] = "Terse"
-        assert _validate_question(d, "terse") is True
+        assert _validate_question(d, "terse") is None
 
     def test_non_integer_index(self):
         d = self._valid_data()
         d["correct_index"] = "zero"
-        assert _validate_question(d, "terse") is False
+        reason = _validate_question(d, "terse")
+        assert reason is not None
+        assert "not an int" in reason
+
+    def test_string_index_coerced(self):
+        """correct_index as string "0" should be coerced to int."""
+        d = self._valid_data()
+        d["correct_index"] = "0"
+        assert _validate_question(d, "terse") is None
+        assert d["correct_index"] == 0
+
+    def test_wrong_index_auto_fixed(self):
+        """If correct_index points to wrong word but target exists in choices, fix it."""
+        d = self._valid_data()
+        d["correct_index"] = 2  # points to "pithy" instead of "terse"
+        assert _validate_question(d, "terse") is None
+        assert d["correct_index"] == 0  # auto-fixed to correct position
+
+    def test_blank_normalization(self):
+        """Various blank markers should be normalized to ___."""
+        d = self._valid_data()
+        d["stem"] = "Her ________ reply left no room for pleasantries."
+        assert _validate_question(d, "terse") is None
+        assert "___" in d["stem"]
 
 
 class TestFixArticleBeforeBlank:
@@ -405,8 +439,8 @@ class TestGenerateQuestion:
         # But why will be empty (no LLM enrichment)
         for detail in q.choice_details:
             assert detail["why"] == ""
-        # 1 step1 + 2 enrichment retries = 3 calls
-        assert llm.call_count == 3
+        # 1 step1 + 3 enrichment retries = 4 calls
+        assert llm.call_count == 4
 
     @pytest.mark.asyncio
     async def test_invalid_llm_response_retries(self, populated_db):
