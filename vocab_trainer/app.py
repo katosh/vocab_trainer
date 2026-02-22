@@ -71,6 +71,7 @@ def _get_tts():
 
 _bg_generating = False
 _shutting_down = False
+_shutdown_event: asyncio.Event | None = None  # set on shutdown to unblock SSE sleeps
 _bg_log = logging.getLogger("vocab_trainer.bg")
 
 # Background LLM tasks — tracked so chat can cancel them for GPU priority.
@@ -165,9 +166,10 @@ def _auto_import_if_changed(db: Database, settings: Settings) -> None:
 
 @app.on_event("startup")
 async def startup():
-    global _db, _settings
+    global _db, _settings, _shutdown_event
     if _db is not None:
         return  # Already initialized (e.g. by tests)
+    _shutdown_event = asyncio.Event()
     _settings = load_settings()
     _db = Database(_settings.db_full_path)
     if not os.environ.get("VOCAB_TRAINER_NO_AUTO_IMPORT"):
@@ -179,6 +181,8 @@ async def startup():
 async def shutdown():
     global _shutting_down
     _shutting_down = True
+    if _shutdown_event:
+        _shutdown_event.set()
     # Cancel all background LLM tasks and give them 2s to clean up
     for t in list(_bg_tasks):
         t.cancel()
@@ -589,7 +593,15 @@ async def api_session_events(session_id: int):
                     yield ": heartbeat\n\n"
                     heartbeat_counter = 0
 
-            await asyncio.sleep(1)
+            # Sleep 1s, but wake immediately on shutdown
+            if _shutdown_event:
+                try:
+                    await asyncio.wait_for(_shutdown_event.wait(), timeout=1.0)
+                    return  # shutdown event set — exit cleanly
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(1)
 
     return StreamingResponse(
         event_stream(),
