@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import random
-import signal
+
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
@@ -165,41 +165,12 @@ def _auto_import_if_changed(db: Database, settings: Settings) -> None:
         db.set_file_mtime(str(vf), current_mtime)
 
 
-def _pre_shutdown():
-    """Signal handler that fires *before* uvicorn waits for connections.
-
-    Uvicorn's ``on_event("shutdown")`` only runs after all active connections
-    (including long-lived SSE streams) have closed, causing a deadlock.  By
-    installing our own SIGINT/SIGTERM handler we can set ``_shutting_down``
-    immediately, which lets SSE generators exit and connections close so that
-    uvicorn's shutdown sequence can proceed normally.
-    """
-    global _shutting_down
-    if _shutting_down:
-        # Second signal → force-exit immediately
-        os._exit(1)
-    _shutting_down = True
-    if _shutdown_event:
-        _shutdown_event.set()
-    for t in list(_bg_tasks):
-        t.cancel()
-    # Remove our handlers and re-raise so uvicorn sees the signal too
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.remove_signal_handler(sig)
-    os.kill(os.getpid(), signal.SIGINT)
-
-
 @app.on_event("startup")
 async def startup():
     global _db, _settings, _shutdown_event
     if _db is not None:
         return  # Already initialized (e.g. by tests)
     _shutdown_event = asyncio.Event()
-    # Register signal handlers so SSE connections close before uvicorn waits
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _pre_shutdown)
     _settings = load_settings()
     _db = Database(_settings.db_full_path)
     if not os.environ.get("VOCAB_TRAINER_NO_AUTO_IMPORT"):
