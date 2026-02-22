@@ -136,8 +136,6 @@ class Database:
                 "ALTER TABLE clusters ADD COLUMN source_file TEXT"
             )
         self.conn.commit()
-        # Backfill choice_details for existing questions
-        self.backfill_choice_details()
 
     def close(self) -> None:
         self.conn.close()
@@ -286,78 +284,6 @@ class Database:
             ),
         )
         self.conn.commit()
-
-    def backfill_choice_details(self) -> int:
-        """Backfill or upgrade choice_details_json for existing questions.
-
-        Handles two cases:
-        1. Empty details (NULL or '[]') — build from cluster_words + stem lookup
-        2. Old-format details (missing 'base_word' or 'why') — upgrade in place
-
-        Merges legacy choice_explanations_json into the ``why`` field.
-        Returns the number of questions updated.
-        """
-        rows = self.conn.execute(
-            "SELECT id, choices_json, cluster_title, choice_explanations_json, "
-            "choice_details_json FROM questions"
-        ).fetchall()
-        if not rows:
-            return 0
-
-        updated = 0
-        for row in rows:
-            cluster_title = row["cluster_title"]
-            if not cluster_title:
-                continue
-
-            raw_details = row["choice_details_json"] or "[]"
-            try:
-                existing_details = json.loads(raw_details)
-            except (json.JSONDecodeError, TypeError):
-                existing_details = []
-
-            # Skip if already in new format (has base_word and why on all entries)
-            if existing_details and all(
-                "base_word" in d and "why" in d for d in existing_details
-            ):
-                continue
-
-            cluster = self.get_cluster_by_title(cluster_title)
-            if not cluster:
-                continue
-            cw = self.get_cluster_words(cluster["id"])
-            cw_map = {w["word"].lower(): w for w in cw}
-
-            choices = json.loads(row["choices_json"])
-
-            # Parse legacy per-choice explanations
-            raw_expl = row["choice_explanations_json"] or "[]"
-            try:
-                per_choice = json.loads(raw_expl)
-            except (json.JSONDecodeError, TypeError):
-                per_choice = []
-
-            details = []
-            for i, c in enumerate(choices):
-                info = _lookup_cluster_word(cw_map, c)
-                # Preserve any existing meaning/distinction from old details
-                old = existing_details[i] if i < len(existing_details) else {}
-                details.append({
-                    "word": c,
-                    "base_word": info.get("word", c) if info else c,
-                    "meaning": old.get("meaning") or (info.get("meaning", "") if info else ""),
-                    "distinction": old.get("distinction") or (info.get("distinction", "") if info else ""),
-                    "why": old.get("why") or (per_choice[i] if i < len(per_choice) else ""),
-                })
-
-            self.conn.execute(
-                "UPDATE questions SET choice_details_json = ? WHERE id = ?",
-                (json.dumps(details), row["id"]),
-            )
-            updated += 1
-
-        self.conn.commit()
-        return updated
 
     def get_question_bank_size(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) FROM questions").fetchone()
