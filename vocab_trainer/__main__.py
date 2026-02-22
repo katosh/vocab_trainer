@@ -128,7 +128,13 @@ def _serve(args: list[str]):
         print(f"Starting Vocab Trainer on http://{host}:{port}")
     print("Press Ctrl+C to stop\n")
     try:
-        uvicorn.run("vocab_trainer.app:app", host=host, port=port, reload=False)
+        uvicorn.run(
+            "vocab_trainer.app:app",
+            host=host,
+            port=port,
+            reload=False,
+            timeout_graceful_shutdown=3,
+        )
     finally:
         _remove_pid()
         os.environ.pop("VOCAB_TRAINER_NO_AUTO_IMPORT", None)
