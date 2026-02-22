@@ -398,8 +398,8 @@ async def generate_question(
     prompt = base_prompt
     for attempt in range(MAX_RETRIES):
         try:
-            _log.info("Generate %s for '%s' (attempt %d/%d)",
-                       question_type, target, attempt + 1, MAX_RETRIES)
+            _log.info("Generate %s (attempt %d/%d)",
+                       question_type, attempt + 1, MAX_RETRIES)
             response = await llm.generate(prompt, temperature=0.7)
             data = _extract_json(response)
             if data is None:
@@ -422,7 +422,7 @@ async def generate_question(
                 llm, cluster, cluster_words, data,
             )
 
-            _log.info("  Done: %s '%s'", question_type, target)
+            _log.info("  Done")
             return Question(
                 id=str(uuid.uuid4()),
                 question_type=question_type,

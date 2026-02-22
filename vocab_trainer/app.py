@@ -104,11 +104,10 @@ async def _ensure_question_buffer():
     ready = db.get_ready_question_count()
     shortfall = _active_session_shortfall()
     target = s.min_ready_questions + shortfall
-    _bg_log.info("Buffer check: %d ready, %d required (buffer %d + session %d)",
-                 ready, target, s.min_ready_questions, shortfall)
     if ready >= target:
         return
     need = target - ready
+    _bg_log.info("Buffer low: %d ready, %d needed — generating %d", ready, target, need)
     _bg_generating = True
     task = asyncio.create_task(_generate_in_background(need))
     _bg_tasks.add(task)
@@ -119,14 +118,11 @@ async def _generate_in_background(count: int):
     global _bg_generating
     cancelled = False
     try:
-        _bg_log.info("Background generation: creating %d questions", count)
         db = get_db()
         llm = _get_llm()
         questions = await generate_batch(llm, db, count=count)
-        _bg_log.info(
-            "Background generation: created %d questions, bank now %d ready",
-            len(questions), db.get_ready_question_count(),
-        )
+        _bg_log.info("Generated %d questions, bank now %d ready",
+                     len(questions), db.get_ready_question_count())
     except asyncio.CancelledError:
         _bg_log.info("Background generation cancelled (session/chat priority)")
         cancelled = True
@@ -287,8 +283,6 @@ async def api_session_start():
     questions_data = list(review_qs)
     review_count = len(questions_data)
     seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
-    _session_log.info("Session %d: %d review questions loaded", session_id, review_count)
-
     # 2. Fill remaining slots (up to session_size) with new banked questions
     new_count = 0
     remaining_slots = max(0, s.session_size - len(questions_data))
@@ -299,19 +293,19 @@ async def api_session_start():
                 questions_data.append(q)
                 seen_words.add(q["target_word"].lower())
                 new_count += 1
-    _session_log.info("Session %d: %d new questions loaded", session_id, new_count)
 
     # 3. Fill remaining slots with unseen questions for already-active words
     remaining_slots = max(0, s.session_size - len(questions_data))
-    reinforce_count = 0
+    extra_count = 0
     if remaining_slots > 0:
         active_qs = db.get_active_word_new_questions(limit=remaining_slots, exclude_words=seen_words)
         for q in active_qs:
             if q["target_word"].lower() not in seen_words:
                 questions_data.append(q)
                 seen_words.add(q["target_word"].lower())
-                reinforce_count += 1
-    _session_log.info("Session %d: %d reinforcement questions loaded", session_id, reinforce_count)
+                extra_count += 1
+    _session_log.info("Session %d: loaded %d questions (%d review, %d new, %d extra)",
+                      session_id, len(questions_data), review_count, new_count, extra_count)
 
     # Shuffle banked questions for variety
     random.shuffle(questions_data)
@@ -563,6 +557,22 @@ async def api_session_next(request: Request):
     return await _get_next_question(session_id)
 
 
+class _SSEResponse(StreamingResponse):
+    """StreamingResponse that silences CancelledError during server shutdown.
+
+    Uvicorn's graceful shutdown timeout force-cancels SSE connections,
+    which raises CancelledError inside starlette's listen_for_disconnect.
+    Without this wrapper, uvicorn logs it as ``ERROR: Exception in ASGI
+    application`` — alarming but harmless.
+    """
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        except asyncio.CancelledError:
+            pass
+
+
 @app.get("/api/session/{session_id}/events")
 async def api_session_events(session_id: int):
     if session_id not in _active_sessions:
@@ -604,7 +614,7 @@ async def api_session_events(session_id: int):
             else:
                 await asyncio.sleep(1)
 
-    return StreamingResponse(
+    return _SSEResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
