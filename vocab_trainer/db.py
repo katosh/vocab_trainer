@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from vocab_trainer.models import (
@@ -405,20 +405,21 @@ class Database:
         return [dict(r) for r in rows]
 
     def reset_word_due(self, word: str, cluster_title: str | None = None) -> None:
-        """Reset SRS for a word(-cluster) so it becomes due immediately."""
+        """Reset SRS for a word(-cluster) so it becomes due in 1 day (like a wrong answer)."""
+        next_review = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
         if cluster_title is not None:
             self.conn.execute(
-                "UPDATE word_progress SET next_review = datetime('now'), "
+                "UPDATE word_progress SET next_review = ?, "
                 "interval_days = 1.0, repetitions = 0 "
                 "WHERE LOWER(word) = LOWER(?) AND cluster_title = ?",
-                (word, cluster_title),
+                (next_review, word, cluster_title),
             )
         else:
             self.conn.execute(
-                "UPDATE word_progress SET next_review = datetime('now'), "
+                "UPDATE word_progress SET next_review = ?, "
                 "interval_days = 1.0, repetitions = 0 "
                 "WHERE LOWER(word) = LOWER(?)",
-                (word,),
+                (next_review, word),
             )
         self.conn.commit()
 
@@ -485,7 +486,10 @@ class Database:
         self.conn.commit()
 
     def get_word_clusters_needing_questions(self) -> list[dict]:
-        """Active word-clusters that have no ready (unanswered) question."""
+        """Active word-clusters that have no ready (unanswered) question.
+
+        Ordered by next_review so due words generate first.
+        """
         rows = self.conn.execute("""
             SELECT wp.word, wp.cluster_title
             FROM word_progress wp
@@ -495,8 +499,10 @@ class Database:
                 AND q.answered_at IS NULL
             WHERE wp.archived = 0
               AND q.id IS NULL
+            ORDER BY wp.next_review ASC
         """).fetchall()
         return [dict(r) for r in rows]
+
 
     def get_new_word_clusters_with_ready_count(self) -> int:
         """Count distinct new (no word_progress) word-clusters that have a ready question."""

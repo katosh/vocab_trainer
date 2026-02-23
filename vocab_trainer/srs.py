@@ -90,6 +90,8 @@ def record_review(
         # Compute effective interval with overdue credit for correct answers
         if quality >= 3 and progress["next_review"]:
             next_due = datetime.fromisoformat(progress["next_review"])
+            if next_due.tzinfo is None:
+                next_due = next_due.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             overdue_seconds = (now - next_due).total_seconds()
             if overdue_seconds > 0:

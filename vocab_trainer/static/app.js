@@ -435,6 +435,8 @@ function showQuestion(data) {
 }
 
 async function submitAnswer(selectedIndex, questionData) {
+    _repeatActive = false;
+
     // Disable all choice buttons
     const buttons = document.querySelectorAll('.choice-btn');
     buttons.forEach(btn => btn.classList.add('disabled'));
@@ -522,6 +524,7 @@ async function submitAnswer(selectedIndex, questionData) {
             interval_days: result.archive.interval_days,
             repetitions: result.archive.repetitions,
             next_review: result.archive.next_review,
+            archive_threshold: result.archive.archive_threshold || 21,
         } : null;
         if (archiveWord) {
             archiveEl.classList.remove('hidden', 'archived', 'kept');
@@ -648,15 +651,19 @@ async function submitAnswer(selectedIndex, questionData) {
     }
 }
 
+let _repeatActive = false;
+
 async function markRepeat(word, clusterTitle, savedSrs) {
     try {
         await api('/api/questions/reset-due', 'POST', {
             word, cluster_title: clusterTitle,
         });
+        _repeatActive = true;
         const repeatBtn = document.getElementById('repeat-btn');
         const archiveText = document.getElementById('archive-text');
+        const th = savedSrs.archive_threshold || 21;
         repeatBtn.textContent = 'Undo repeat';
-        archiveText.innerHTML = '<strong>In rotation</strong> — will repeat';
+        archiveText.innerHTML = `<strong>In rotation</strong> — interval 1 of ${th} days`;
         repeatBtn.onclick = () => undoRepeat(word, clusterTitle, savedSrs);
     } catch (e) {
         console.error('Repeat failed:', e);
@@ -668,17 +675,36 @@ async function undoRepeat(word, clusterTitle, savedSrs) {
         await api('/api/word-progress/restore-srs', 'POST', {
             word, cluster_title: clusterTitle, ...savedSrs,
         });
+        _repeatActive = false;
         const repeatBtn = document.getElementById('repeat-btn');
         const archiveText = document.getElementById('archive-text');
         const iv = savedSrs.interval_days || 0;
+        const th = savedSrs.archive_threshold || 21;
         const progress = iv > 0
-            ? ` — interval ${Math.round(iv)} days`
+            ? ` — interval ${Math.round(iv)} of ${th} days`
             : '';
         archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
         repeatBtn.textContent = 'Repeat';
         repeatBtn.onclick = () => markRepeat(word, clusterTitle, savedSrs);
     } catch (e) {
         console.error('Undo repeat failed:', e);
+    }
+}
+
+function _showRepeatState(repeatBtn, archiveText, word, clusterTitle, savedSrs) {
+    repeatBtn.classList.remove('hidden');
+    repeatBtn.disabled = false;
+    const th = savedSrs.archive_threshold || 21;
+    if (_repeatActive) {
+        repeatBtn.textContent = 'Undo repeat';
+        archiveText.innerHTML = `<strong>In rotation</strong> — interval 1 of ${th} days`;
+        repeatBtn.onclick = () => undoRepeat(word, clusterTitle, savedSrs);
+    } else {
+        const iv = savedSrs.interval_days || 0;
+        const progress = iv > 0 ? ` — interval ${Math.round(iv)} of ${th} days` : '';
+        archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
+        repeatBtn.textContent = 'Repeat';
+        repeatBtn.onclick = () => markRepeat(word, clusterTitle, savedSrs);
     }
 }
 
@@ -700,18 +726,13 @@ async function toggleArchive(word, clusterTitle, archived, savedSrs) {
             repeatBtn.classList.add('hidden');
         } else {
             archiveEl.classList.add('kept');
-            const iv = savedSrs ? savedSrs.interval_days : 0;
-            const restoredInfo = iv > 0 ? ` — interval ${Math.round(iv)} days` : '';
-            archiveText.innerHTML = `<strong>In rotation</strong>${restoredInfo}`;
             archiveToggle.textContent = 'Archive';
             archiveToggle.onclick = () => toggleArchive(word, clusterTitle, true, savedSrs);
             if (savedSrs) {
-                repeatBtn.textContent = 'Repeat';
-                repeatBtn.disabled = false;
-                repeatBtn.classList.remove('hidden');
-                repeatBtn.onclick = () => markRepeat(word, clusterTitle, savedSrs);
+                _showRepeatState(repeatBtn, archiveText, word, clusterTitle, savedSrs);
             } else {
                 repeatBtn.classList.add('hidden');
+                archiveText.innerHTML = '<strong>In rotation</strong>';
             }
         }
     } catch (e) {
