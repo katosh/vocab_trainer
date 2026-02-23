@@ -7,7 +7,6 @@ import logging
 import os
 import random
 import signal
-import threading
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -251,51 +250,35 @@ def _auto_import_if_changed(db: Database, settings: Settings) -> None:
 
 
 def _install_shutdown_handlers() -> None:
-    """Intercept SIGINT/SIGTERM to close SSE connections before uvicorn times out.
+    """Wrap uvicorn's signal handlers to close SSE connections immediately.
 
-    Uvicorn runs lifespan shutdown AFTER its graceful-shutdown timeout, so
-    setting _shutdown_event there is too late for SSE streams.  Instead we
-    intercept the signal, notify SSE connections immediately, then re-deliver
-    the signal after a brief delay so uvicorn proceeds with its normal
-    shutdown — by which time all connections have already closed cleanly.
+    Uvicorn uses signal.signal() to catch SIGINT/SIGTERM and sets
+    should_exit=True, but it runs lifespan shutdown AFTER its graceful
+    timeout — too late for SSE streams.  We wrap its handler: first
+    close our SSE connections and cancel bg tasks, then call through
+    to uvicorn's original handler for normal graceful shutdown.
     """
-    loop = asyncio.get_running_loop()
+    prev_handlers: dict[int, object] = {}
 
-    def _on_signal() -> None:
+    def _on_signal(signum: int, frame) -> None:
         global _shutting_down
-        if _shutting_down:
-            # Second Ctrl+C: restore defaults and force-quit
-            _remove_handlers()
-            threading.Thread(target=os.kill, args=(os.getpid(), signal.SIGINT),
-                             daemon=True).start()
-            return
-        _shutting_down = True
-        if _shutdown_event:
-            _shutdown_event.set()
-        for t in list(_bg_tasks):
-            t.cancel()
-        # Give SSE connections a moment to close, then let uvicorn shut down
-        loop.call_later(0.5, _redeliver)
+        if not _shutting_down:
+            _shutting_down = True
+            if _shutdown_event:
+                _shutdown_event.set()
+            for t in list(_bg_tasks):
+                t.cancel()
+        # Restore and call uvicorn's original handler
+        prev = prev_handlers.get(signum)
+        if callable(prev):
+            signal.signal(signum, prev)
+            prev(signum, frame)
+        else:
+            signal.signal(signum, signal.SIG_DFL)
+            signal.raise_signal(signum)
 
-    def _redeliver() -> None:
-        _remove_handlers()
-        # Send SIGINT from a thread so it's delivered to the main thread
-        # outside of any event-loop callback context.
-        threading.Thread(target=os.kill, args=(os.getpid(), signal.SIGINT),
-                         daemon=True).start()
-
-    def _remove_handlers() -> None:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.remove_signal_handler(sig)
-            except (ValueError, OSError):
-                pass
-
-    try:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _on_signal)
-    except NotImplementedError:
-        pass  # Windows
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        prev_handlers[sig] = signal.signal(sig, _on_signal)
 
 
 def _cleanup_orphaned_audio(db: Database, settings: Settings) -> None:
