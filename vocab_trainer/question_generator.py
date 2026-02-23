@@ -241,18 +241,20 @@ def _validate_question(data: dict, target_word: str, question_type: str = "fill_
         dupes = [c for c in lower_choices if lower_choices.count(c) > 1]
         return f"duplicate choices: {set(dupes)}"
 
-    # Stem must have a blank (fill_blank only — best_fit uses "Which word…?" format)
+    # Stem must have exactly one blank (fill_blank only — best_fit uses "Which word…?" format)
     if question_type == "fill_blank":
         stem = data["stem"]
-        # Normalize various blank markers to ___
-        if "___" not in stem:
-            normalized = re.sub(r"_{4,}", "___", stem)   # ____ → ___
-            normalized = re.sub(r"\[blank\]", "___", normalized, flags=re.IGNORECASE)
-            normalized = re.sub(r"\(blank\)", "___", normalized, flags=re.IGNORECASE)
-            if "___" in normalized:
-                data["stem"] = normalized
-            else:
-                return f"stem has no blank marker: {stem[:80]!r}"
+        # Normalize various blank markers to ___ (always run so 4+ underscores
+        # are collapsed before counting)
+        normalized = re.sub(r"_{3,}", "___", stem)    # ___, ____, _____ → ___
+        normalized = re.sub(r"\[blank\]", "___", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\(blank\)", "___", normalized, flags=re.IGNORECASE)
+        if "___" not in normalized:
+            return f"stem has no blank marker: {stem[:80]!r}"
+        data["stem"] = normalized
+        blank_count = data["stem"].count("___")
+        if blank_count > 1:
+            return f"stem must have exactly one blank (found {blank_count})"
 
     # Context sentence should contain the target word (or a morphological form)
     ctx = data.get("context_sentence", "").lower()

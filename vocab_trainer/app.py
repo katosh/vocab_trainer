@@ -894,26 +894,11 @@ async def api_update_settings(request: Request):
 def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
     """Build a single prompt for the chat LLM call.
 
-    First message (empty history): a rich preamble with full quiz context,
-    word definitions, and output expectations — primes the model so
-    thoroughly it doesn't need chain-of-thought reasoning.
-
-    Follow-up messages: just the conversation history as Student/Tutor
-    turns plus the new message. No preamble repetition.
+    Always includes the full preamble (persona, formatting rules, quiz
+    context, word definitions) so the model maintains voice and
+    instructions across the entire conversation.
     """
-    if history:
-        # Follow-up: compact history + new message
-        lines: list[str] = []
-        for msg in history:
-            role = "Student" if msg["role"] == "user" else "Tutor"
-            lines.append(f"{role}: {msg['content']}")
-            lines.append("")
-        lines.append(f"Student: {message}")
-        lines.append("")
-        lines.append("Tutor:")
-        return "\n".join(lines)
-
-    # First message: rich preamble with full context
+    # ── Quiz context ──
     q_type = context.get("question_type", "fill_blank")
     type_labels = {
         "fill_blank": "fill-in-the-blank",
@@ -934,7 +919,7 @@ def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
     choices_str = ", ".join(f"{labels[i]}) {c}" for i, c in enumerate(choices))
     chosen = choices[selected_idx] if selected_idx is not None and selected_idx < len(choices) else "?"
 
-    # Build word definitions block (meaning, distinction, and per-sentence fit analysis)
+    # Build word definitions block
     defs_lines = []
     for d in details:
         if d.get("meaning"):
@@ -953,9 +938,9 @@ def _build_chat_prompt(context: dict, history: list[dict], message: str) -> str:
         outcome = f'The student chose "{chosen}" — wrong. The correct answer is "{correct_word}".'
         task = f"Clarify why **{chosen}** doesn't fit and what makes **{correct_word}** the right choice. Then illuminate the broader distinctions."
 
-    preamble = f"""You are a vocabulary tutor. Your mission is to teach impeccable vocabulary use — the student should walk away knowing not just what each word means, but exactly when to reach for it instead of its near-synonyms, what collocations it naturally forms, and where substituting a close alternative would sound wrong to a native ear.
+    preamble = f"""You are Dr. Elena Voss, a lexicographer and assessment specialist with 20 years of experience designing items for the GRE, SAT, and Cambridge English exams. You have an extraordinary talent for illuminating subtle semantic boundaries — you tell students not just why an answer is right, but exactly why the closest alternative fails.
 
-Your first sentence always delivers substance — a specific semantic distinction, an etymological root, a revealing collocational pattern. You write in flowing prose with **bold** highlights and example sentences woven in naturally. No lists, no tables.
+You write in flowing prose with **bold** highlights and example sentences woven in naturally. Your first sentence always delivers substance — a specific semantic distinction, an etymological root, a revealing collocational pattern. Never use lists, bullet points, numbered steps, tables, or headers. Everything is connected prose.
 
 Here is an example of the quality of insight you produce:
 "**Beatific** and **blissful** both describe profound happiness, but they diverge in register and reach. **Beatific** carries a specifically religious resonance — from Latin *beatus* (blessed) — and implies serene, transcendent joy: you'd write 'a beatific smile' but never 'beatific ignorance.' **Blissful** works in secular contexts and pairs naturally with unawareness — 'blissful ignorance,' 'blissful sleep' — a happiness that's felt rather than radiated outward. **Elated** moves into a different register entirely: it's active, momentary, tied to a specific occasion, where the other two describe sustained states."
@@ -974,13 +959,19 @@ Context sentence: {context_sentence}
 {defs_block}
 """
 
-    preamble += f"""{task}
+    preamble += task
 
-Student: {message}
+    # ── Conversation turns ──
+    lines = [preamble, ""]
+    for msg in history:
+        role = "Student" if msg["role"] == "user" else "Dr. Voss"
+        lines.append(f"{role}: {msg['content']}")
+        lines.append("")
+    lines.append(f"Student: {message}")
+    lines.append("")
+    lines.append("Dr. Voss:")
 
-Tutor: **"""
-
-    return preamble
+    return "\n".join(lines)
 
 
 @app.post("/api/chat")

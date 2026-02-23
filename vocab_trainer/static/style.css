@@ -332,7 +332,7 @@ nav {
 }
 
 .choice-btn.disabled {
-    cursor: default;
+    cursor: pointer;
     opacity: 0.7;
 }
 
@@ -355,6 +355,7 @@ nav {
     color: var(--text);
     margin-bottom: 12px;
     line-height: 1.6;
+    cursor: pointer;
 }
 
 .context-sentence {
@@ -365,6 +366,7 @@ nav {
     padding: 8px 12px;
     background: var(--bg);
     border-radius: 6px;
+    cursor: pointer;
 }
 
 /* Choice details (post-answer) */
@@ -392,6 +394,10 @@ nav {
 
 .choice-detail.correct {
     border-left-color: var(--success);
+}
+
+.choice-detail-text {
+    cursor: pointer;
 }
 
 .choice-detail-text strong {

@@ -422,6 +422,10 @@ function showQuestion(data) {
             // Ignore clicks that are actually text selections ending over a button
             const sel = window.getSelection();
             if (sel && sel.toString().length > 0) return;
+            if (btn.classList.contains('disabled')) {
+                speakText(choice);
+                return;
+            }
             submitAnswer(i, data);
         });
         choicesEl.appendChild(btn);
@@ -459,8 +463,21 @@ async function submitAnswer(selectedIndex, questionData) {
         document.getElementById('result-icon').style.color =
             result.correct ? 'var(--success)' : 'var(--error)';
 
-        document.getElementById('explanation').textContent = result.explanation;
-        document.getElementById('context-sentence').textContent = result.context_sentence;
+        const explanationEl = document.getElementById('explanation');
+        explanationEl.textContent = result.explanation;
+        explanationEl.onclick = () => speakText(result.explanation);
+
+        const ctxEl = document.getElementById('context-sentence');
+        ctxEl.textContent = result.context_sentence;
+        ctxEl.onclick = () => {
+            const ttsAudio = document.getElementById('tts-audio');
+            if (ttsAudio && ttsAudio.src) {
+                stopAllAudio();
+                ttsAudio.play().catch(() => {});
+            } else {
+                speakText(result.context_sentence);
+            }
+        };
 
         // Render choice details with per-word action buttons
         const detailsEl = document.getElementById('choice-details');
@@ -489,6 +506,7 @@ async function submitAnswer(selectedIndex, questionData) {
                 `</div>`;
 
             item.innerHTML = html;
+            item.querySelector('.choice-detail-text').onclick = () => speakText(d.word);
             detailsEl.appendChild(item);
         });
 
@@ -810,6 +828,20 @@ function appendChatMessage(role, text) {
     return el;
 }
 
+async function speakText(text) {
+    stopAllAudio();
+    try {
+        const result = await api('/api/tts/generate', 'POST', { text });
+        if (result.audio_hash) {
+            const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
+            activeAudioElements.push(audio);
+            audio.play();
+        }
+    } catch (e) {
+        console.error('TTS failed:', e);
+    }
+}
+
 function addNarrateButton(msgEl, rawText) {
     const bar = document.createElement('div');
     bar.className = 'chat-msg-actions';
@@ -1057,11 +1089,7 @@ async function sendChatMessage(message) {
     const assistantEl = appendChatMessage('assistant', '');
     assistantEl.classList.add('streaming');
 
-    // The backend pre-fills "**" after "Tutor:" on the first message to
-    // force a substantive bold-word opening.  The model continues from
-    // that prefix, so we prepend it here to keep the markdown valid.
-    const prefill = chatHistory.length === 0 ? '**' : '';
-    let fullResponse = prefill;
+    let fullResponse = '';
 
     try {
         const resp = await fetch(API + '/api/chat', {

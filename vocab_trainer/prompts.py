@@ -57,7 +57,7 @@ Target word: **{target_word}** — {target_meaning} (distinction: {target_distin
 
 {enrichment_section}
 
-Requirements: "{target_word}" must be one of the 4 choices. All choices inflected identically. correct_index points to "{target_word}".
+Requirements: "{target_word}" must be one of the 4 choices. All choices inflected identically. correct_index points to "{target_word}". The stem must contain exactly one blank (___) — never two or more.
 
 Dr. Voss's item:
 ```json
