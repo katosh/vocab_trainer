@@ -510,19 +510,34 @@ async function submitAnswer(selectedIndex, questionData) {
             detailsEl.appendChild(item);
         });
 
-        // Show archive decision with override
+        // Show archive decision with override + repeat button
         const archiveEl = document.getElementById('archive-status');
         const archiveText = document.getElementById('archive-text');
         const archiveToggle = document.getElementById('archive-toggle');
+        const repeatBtn = document.getElementById('repeat-btn');
         const archiveWord = result.archive && result.archive.word;
         const archiveCluster = result.archive && result.archive.cluster_title;
+        const savedSrs = result.archive ? {
+            easiness_factor: result.archive.easiness_factor,
+            interval_days: result.archive.interval_days,
+            repetitions: result.archive.repetitions,
+            next_review: result.archive.next_review,
+        } : null;
         if (archiveWord) {
             archiveEl.classList.remove('hidden', 'archived', 'kept');
+            if (result.correct) {
+                repeatBtn.textContent = 'Repeat';
+                repeatBtn.disabled = false;
+                repeatBtn.classList.remove('hidden');
+                repeatBtn.onclick = () => markRepeat(archiveWord, archiveCluster, savedSrs);
+            } else {
+                repeatBtn.classList.add('hidden');
+            }
             if (result.archive.archived) {
                 archiveEl.classList.add('archived');
                 archiveText.innerHTML = `<strong>Archived</strong> — ${result.archive.reason}`;
                 archiveToggle.textContent = 'Keep in rotation';
-                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, false);
+                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, false, savedSrs);
             } else {
                 archiveEl.classList.add('kept');
                 const iv = result.archive.interval_days || 0;
@@ -532,7 +547,7 @@ async function submitAnswer(selectedIndex, questionData) {
                     : '';
                 archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
                 archiveToggle.textContent = 'Archive';
-                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, true);
+                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, true, savedSrs);
             }
         } else {
             archiveEl.classList.add('hidden');
@@ -633,7 +648,41 @@ async function submitAnswer(selectedIndex, questionData) {
     }
 }
 
-async function toggleArchive(word, clusterTitle, archived) {
+async function markRepeat(word, clusterTitle, savedSrs) {
+    try {
+        await api('/api/questions/reset-due', 'POST', {
+            word, cluster_title: clusterTitle,
+        });
+        const repeatBtn = document.getElementById('repeat-btn');
+        const archiveText = document.getElementById('archive-text');
+        repeatBtn.textContent = 'Undo repeat';
+        archiveText.innerHTML = '<strong>In rotation</strong> — will repeat';
+        repeatBtn.onclick = () => undoRepeat(word, clusterTitle, savedSrs);
+    } catch (e) {
+        console.error('Repeat failed:', e);
+    }
+}
+
+async function undoRepeat(word, clusterTitle, savedSrs) {
+    try {
+        await api('/api/word-progress/restore-srs', 'POST', {
+            word, cluster_title: clusterTitle, ...savedSrs,
+        });
+        const repeatBtn = document.getElementById('repeat-btn');
+        const archiveText = document.getElementById('archive-text');
+        const iv = savedSrs.interval_days || 0;
+        const progress = iv > 0
+            ? ` — interval ${Math.round(iv)} days`
+            : '';
+        archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
+        repeatBtn.textContent = 'Repeat';
+        repeatBtn.onclick = () => markRepeat(word, clusterTitle, savedSrs);
+    } catch (e) {
+        console.error('Undo repeat failed:', e);
+    }
+}
+
+async function toggleArchive(word, clusterTitle, archived, savedSrs) {
     try {
         await api('/api/word-progress/archive', 'POST', {
             word, cluster_title: clusterTitle, archived,
@@ -641,17 +690,27 @@ async function toggleArchive(word, clusterTitle, archived) {
         const archiveEl = document.getElementById('archive-status');
         const archiveText = document.getElementById('archive-text');
         const archiveToggle = document.getElementById('archive-toggle');
+        const repeatBtn = document.getElementById('repeat-btn');
         archiveEl.classList.remove('archived', 'kept');
         if (archived) {
             archiveEl.classList.add('archived');
             archiveText.innerHTML = '<strong>Archived</strong> — manually archived';
             archiveToggle.textContent = 'Keep in rotation';
-            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, false);
+            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, false, savedSrs);
+            repeatBtn.classList.add('hidden');
         } else {
             archiveEl.classList.add('kept');
             archiveText.innerHTML = '<strong>In rotation</strong> — restored';
             archiveToggle.textContent = 'Archive';
-            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, true);
+            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, true, savedSrs);
+            if (savedSrs) {
+                repeatBtn.textContent = 'Repeat';
+                repeatBtn.disabled = false;
+                repeatBtn.classList.remove('hidden');
+                repeatBtn.onclick = () => markRepeat(word, clusterTitle, savedSrs);
+            } else {
+                repeatBtn.classList.add('hidden');
+            }
         }
     } catch (e) {
         console.error('Archive toggle failed:', e);

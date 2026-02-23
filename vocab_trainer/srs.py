@@ -127,4 +127,7 @@ def record_review(
         "reason": reason,
         "interval_days": round(new_interval, 1),
         "archive_threshold": archive_interval_days,
+        "easiness_factor": round(new_ef, 4),
+        "repetitions": new_reps,
+        "next_review": next_review.isoformat(),
     }

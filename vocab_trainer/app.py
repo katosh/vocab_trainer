@@ -440,8 +440,8 @@ async def api_session_start():
     _session_log.info("Session %d: loaded %d questions (%d review, %d new)",
                       session_id, len(questions_data), review_count, new_count)
 
-    # Shuffle banked questions for variety
-    random.shuffle(questions_data)
+    # DB already returns due reviews first (freshly due before long-overdue),
+    # then new words in random order — no need to reshuffle.
 
     if not questions_data and db.get_cluster_count() == 0:
         return {"error": "No questions available. Import vocabulary and generate questions first.", "session_id": None}
@@ -824,6 +824,26 @@ async def api_questions_reset_due(request: Request):
     if not word:
         raise HTTPException(400, "No word provided")
     get_db().reset_word_due(word, cluster_title)
+    return {"ok": True}
+
+
+@app.post("/api/word-progress/restore-srs")
+async def api_restore_srs(request: Request):
+    """Restore SRS state to previously recorded values (undo repeat)."""
+    body = await request.json()
+    word = body.get("word", "")
+    cluster_title = body.get("cluster_title", "")
+    if not word:
+        raise HTTPException(400, "No word provided")
+    get_db().upsert_word_progress(
+        word=word,
+        cluster_title=cluster_title,
+        easiness_factor=body["easiness_factor"],
+        interval_days=body["interval_days"],
+        repetitions=body["repetitions"],
+        next_review=body["next_review"],
+        correct=True,
+    )
     return {"ok": True}
 
 
