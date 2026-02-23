@@ -393,14 +393,7 @@ function showQuestion(data) {
     };
     const typeEl = document.getElementById('question-type');
     typeEl.textContent = typeLabels[data.question_type] || data.question_type;
-    const badge = document.getElementById('question-badge');
-    if (data.is_new) {
-        badge.textContent = 'New';
-        badge.className = 'question-badge new';
-    } else {
-        badge.textContent = 'Review';
-        badge.className = 'question-badge review';
-    }
+    document.getElementById('question-badge').textContent = '';
 
     // Cluster
     document.getElementById('cluster-title').textContent =
