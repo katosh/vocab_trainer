@@ -63,6 +63,14 @@
                 <p>Start a session from the Dashboard to begin.</p>
             </div>
 
+            <!-- Session progress (visible during loading + question states) -->
+            <div id="session-progress" class="hidden">
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progress-bar"></div>
+                </div>
+                <div class="progress-text" id="progress-text"></div>
+            </div>
+
             <!-- Loading state -->
             <div id="quiz-loading" class="quiz-state hidden">
                 <div class="spinner"></div>
@@ -71,11 +79,6 @@
 
             <!-- Question state -->
             <div id="quiz-question" class="quiz-state hidden">
-                <div class="progress-bar-container">
-                    <div class="progress-bar" id="progress-bar"></div>
-                </div>
-                <div class="progress-text" id="progress-text"></div>
-
                 <div class="question-card">
                     <div class="question-meta">
                         <div class="question-type" id="question-type"></div>
@@ -97,6 +100,7 @@
                         <button class="archive-toggle-btn" id="archive-toggle"></button>
                     </div>
                     <audio id="tts-audio" hidden></audio>
+                    <div id="audio-loading" class="audio-loading hidden"></div>
 
                     <!-- Word chat (LLM tutor) -->
                     <div class="word-chat" id="word-chat">
@@ -125,6 +129,7 @@
                         </div>
                         <div class="chat-input-row">
                             <input type="text" id="chat-input" placeholder="Ask about these words..." autocomplete="off" data-1p-ignore>
+                            <button id="chat-narration-toggle" class="chat-narration-toggle hidden" title="Pause / resume narration">⏸</button>
                             <button id="chat-send" class="chat-send-btn">Send</button>
                         </div>
                     </div>
@@ -219,11 +224,6 @@
                     <input id="set-session-size" type="range" min="5" max="50" value="20">
                     <span id="set-session-size-val">20</span>
                     <small class="form-hint">Total questions per session (reviews + new words)</small>
-                </div>
-                <div class="form-group">
-                    <label for="set-min-ready">Min Ready Questions (auto-generate buffer)</label>
-                    <input id="set-min-ready" type="range" min="0" max="20" value="3">
-                    <span id="set-min-ready-val">3</span>
                 </div>
                 <div class="form-group">
                     <label for="set-archive-interval">Archive Interval (days)</label>

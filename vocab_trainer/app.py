@@ -6,7 +6,10 @@ import json
 import logging
 import os
 import random
+import signal
+import threading
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
@@ -21,10 +24,8 @@ from vocab_trainer.db import Database
 from vocab_trainer.models import Question
 from vocab_trainer.parsers.distinctions_parser import parse_distinctions_file
 from vocab_trainer.parsers.vocabulary_parser import parse_vocabulary_file
-from vocab_trainer.question_generator import generate_batch
+from vocab_trainer.question_generator import generate_batch, generate_question
 from vocab_trainer.srs import quality_from_answer, record_review
-
-app = FastAPI(title="Vocab Trainer")
 
 # Global state (initialized in lifespan)
 _db: Database | None = None
@@ -79,50 +80,138 @@ _bg_log = logging.getLogger("vocab_trainer.bg")
 _bg_tasks: set[asyncio.Task] = set()
 
 
-def _active_session_shortfall() -> int:
-    """How many more questions active sessions need beyond what they have."""
-    total = 0
-    for sess in _active_sessions.values():
-        have = len(sess["questions"]) - sess["current_index"]
-        want = sess.get("target", 0)
-        total += max(0, want - have)
-    return total
+def _collect_generation_needs() -> tuple[list[tuple[str, str]], int, int]:
+    """Find word-clusters needing questions.
 
-
-async def _ensure_question_buffer():
-    """Kick off background generation if the non-archived bank is too low.
-
-    Accounts for active sessions that haven't been fully filled yet,
-    so the buffer target is: min_ready_questions + session shortfall.
+    Returns (pairs, active_count, new_count).
     """
-    global _bg_generating
-    if _bg_generating:
-        _bg_log.debug("Buffer check: skipped (generation already running)")
-        return
     db = get_db()
     s = get_settings()
-    ready = db.get_ready_question_count()
-    shortfall = _active_session_shortfall()
-    target = s.min_ready_questions + shortfall
-    if ready >= target:
+
+    # 1. Active word-clusters that need replacement questions
+    needing = db.get_word_clusters_needing_questions()
+    pairs = [(n["word"], n["cluster_title"]) for n in needing]
+    active_count = len(pairs)
+
+    # 2. New word-clusters without ready questions (up to session_size)
+    new_ready = db.get_new_word_clusters_with_ready_count()
+    new_slots = max(0, s.session_size - new_ready)
+    new_count = 0
+    if new_slots > 0:
+        new_needing = db.get_new_word_clusters_without_questions(limit=new_slots)
+        new_pairs = [(n["word"], n["cluster_title"]) for n in new_needing]
+        pairs.extend(new_pairs)
+        new_count = len(new_pairs)
+
+    return pairs, active_count, new_count
+
+
+def _log_needs(active_count: int, new_count: int) -> str:
+    parts = []
+    if active_count:
+        parts.append(f"{active_count} active")
+    if new_count:
+        parts.append(f"{new_count} new")
+    return " + ".join(parts)
+
+
+def _pregenerate_audio(*texts: str) -> None:
+    """Spawn a background task to pre-generate TTS for the given texts."""
+    non_empty = [t for t in texts if t and t.strip()]
+    if not non_empty:
         return
-    need = target - ready
-    _bg_log.info("Buffer low: %d ready, %d needed — generating %d", ready, target, need)
-    _bg_generating = True
-    task = asyncio.create_task(_generate_in_background(need))
+
+    async def _do_pregenerate():
+        try:
+            tts = _get_tts()
+            db = get_db()
+            s = get_settings()
+            for text in non_empty:
+                await get_or_create_audio(text, tts, db, s.audio_cache_full_path)
+        except Exception:
+            pass  # best-effort; answer endpoint will retry if needed
+
+    task = asyncio.create_task(_do_pregenerate())
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
 
 
-async def _generate_in_background(count: int):
+async def _ensure_question_buffer():
+    """Kick off background generation if word-clusters need questions."""
+    global _bg_generating
+    if _bg_generating:
+        _bg_log.debug("Buffer check: skipped (generation already running)")
+        return
+
+    pairs, active_count, new_count = _collect_generation_needs()
+    if not pairs:
+        return
+
+    _bg_log.info("Buffer: %s word-clusters need questions",
+                 _log_needs(active_count, new_count))
+
+    _bg_generating = True
+    task = asyncio.create_task(_generate_in_background(pairs))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+async def _generate_in_background(initial_pairs: list[tuple[str, str]]):
+    """Generate questions one at a time, polling for new needs between each.
+
+    When the user answers questions mid-batch, their word-clusters need
+    replacement questions.  Instead of waiting for the batch to finish,
+    we poll after each generation and grow the queue dynamically.
+    """
     global _bg_generating
     cancelled = False
     try:
         db = get_db()
         llm = _get_llm()
-        questions = await generate_batch(llm, db, count=count)
+        pairs = list(initial_pairs)
+        seen: set[tuple[str, str]] = set(pairs)
+        generated = 0
+        idx = 0
+
+        while idx < len(pairs):
+            word, cluster_title = pairs[idx]
+            idx += 1
+
+            cluster = db.get_cluster_by_title(cluster_title)
+            if not cluster:
+                continue
+            cw = db.get_cluster_words(cluster["id"])
+            word_info = next(
+                (w for w in cw if w["word"].lower() == word.lower()), None
+            )
+            if not word_info:
+                continue
+
+            _bg_log.info("[%d/%d] Generating for '%s'",
+                         idx, len(pairs), cluster_title)
+            q = await generate_question(
+                llm, db, cluster=cluster, target_word_info=word_info,
+            )
+            if q:
+                db.save_question(q)
+                generated += 1
+            else:
+                _bg_log.warning("[%d/%d] Failed for '%s' in '%s'",
+                                idx, len(pairs), word, cluster_title)
+
+            # Poll for active word-clusters needing replacement (answered mid-batch).
+            # Don't re-query new word-clusters — they're already queued and the
+            # RANDOM() ordering would add duplicates under different names.
+            for n in db.get_word_clusters_needing_questions():
+                p = (n["word"], n["cluster_title"])
+                if p not in seen:
+                    pairs.append(p)
+                    seen.add(p)
+                    _bg_log.info("Buffer grew: +1 active (%s / %s), now %d total",
+                                 p[0], p[1], len(pairs))
+
         _bg_log.info("Generated %d questions, bank now %d ready",
-                     len(questions), db.get_ready_question_count())
+                     generated, db.get_ready_question_count())
     except asyncio.CancelledError:
         _bg_log.info("Background generation cancelled (session/chat priority)")
         cancelled = True
@@ -161,32 +250,102 @@ def _auto_import_if_changed(db: Database, settings: Settings) -> None:
         db.set_file_mtime(str(vf), current_mtime)
 
 
-@app.on_event("startup")
-async def startup():
+def _install_shutdown_handlers() -> None:
+    """Intercept SIGINT/SIGTERM to close SSE connections before uvicorn times out.
+
+    Uvicorn runs lifespan shutdown AFTER its graceful-shutdown timeout, so
+    setting _shutdown_event there is too late for SSE streams.  Instead we
+    intercept the signal, notify SSE connections immediately, then re-deliver
+    the signal after a brief delay so uvicorn proceeds with its normal
+    shutdown — by which time all connections have already closed cleanly.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _on_signal() -> None:
+        global _shutting_down
+        if _shutting_down:
+            # Second Ctrl+C: restore defaults and force-quit
+            _remove_handlers()
+            threading.Thread(target=os.kill, args=(os.getpid(), signal.SIGINT),
+                             daemon=True).start()
+            return
+        _shutting_down = True
+        if _shutdown_event:
+            _shutdown_event.set()
+        for t in list(_bg_tasks):
+            t.cancel()
+        # Give SSE connections a moment to close, then let uvicorn shut down
+        loop.call_later(0.5, _redeliver)
+
+    def _redeliver() -> None:
+        _remove_handlers()
+        # Send SIGINT from a thread so it's delivered to the main thread
+        # outside of any event-loop callback context.
+        threading.Thread(target=os.kill, args=(os.getpid(), signal.SIGINT),
+                         daemon=True).start()
+
+    def _remove_handlers() -> None:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.remove_signal_handler(sig)
+            except (ValueError, OSError):
+                pass
+
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _on_signal)
+    except NotImplementedError:
+        pass  # Windows
+
+
+def _cleanup_orphaned_audio(db: Database, settings: Settings) -> None:
+    """Remove audio files and cache entries not referenced by any unanswered question."""
+    cache_dir = settings.audio_cache_full_path
+    if not cache_dir.exists():
+        return
+
+    log = logging.getLogger("audio-cleanup")
+    used_texts = db.get_question_audio_texts()
+    used_hashes = {sentence_hash(t) for t in used_texts}
+
+    removed = 0
+    for mp3 in cache_dir.glob("*.mp3"):
+        h = mp3.stem
+        if h not in used_hashes:
+            mp3.unlink()
+            db.delete_audio_cache(h)
+            removed += 1
+
+    if removed:
+        log.info("Removed %d orphaned audio files", removed)
+
+
+@asynccontextmanager
+async def lifespan(app_instance):
     global _db, _settings, _shutdown_event
-    if _db is not None:
-        return  # Already initialized (e.g. by tests)
-    _shutdown_event = asyncio.Event()
-    _settings = load_settings()
-    _db = Database(_settings.db_full_path)
-    if not os.environ.get("VOCAB_TRAINER_NO_AUTO_IMPORT"):
-        _auto_import_if_changed(_db, _settings)
-    await _ensure_question_buffer()
-
-
-@app.on_event("shutdown")
-async def shutdown():
+    if _db is None:
+        _shutdown_event = asyncio.Event()
+        _settings = load_settings()
+        _db = Database(_settings.db_full_path)
+        if not os.environ.get("VOCAB_TRAINER_NO_AUTO_IMPORT"):
+            _auto_import_if_changed(_db, _settings)
+        _cleanup_orphaned_audio(_db, _settings)
+        await _ensure_question_buffer()
+        _install_shutdown_handlers()
+    yield
+    # Cleanup (runs after connections close; signal handler handles early shutdown)
     global _shutting_down
     _shutting_down = True
     if _shutdown_event:
         _shutdown_event.set()
-    # Cancel all background LLM tasks and give them 2s to clean up
     for t in list(_bg_tasks):
         t.cancel()
     if _bg_tasks:
         await asyncio.wait(list(_bg_tasks), timeout=2)
     if _db:
         _db.close()
+
+app = FastAPI(title="Vocab Trainer", lifespan=lifespan)
 
 
 # ── Static files ──────────────────────────────────────────────────────────
@@ -277,35 +436,26 @@ async def api_session_start():
 
     session_id = db.start_session()
 
-    # 1. Load ALL due review questions (up to 200) — not capped at session_size.
-    #    The session target is soft; users can keep going past it.
-    review_qs = db.get_review_questions(limit=200)
-    questions_data = list(review_qs)
-    review_count = len(questions_data)
-    seen_words: set[str] = {q["target_word"].lower() for q in questions_data}
-    # 2. Fill remaining slots (up to session_size) with new banked questions
+    # Load ready questions with SRS priority (due reviews + new words only)
+    questions_data = db.get_session_questions(limit=200)
+    seen_pairs: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+    review_count = 0
     new_count = 0
-    remaining_slots = max(0, s.session_size - len(questions_data))
-    if remaining_slots > 0:
-        new_qs = db.get_new_questions(limit=remaining_slots)
-        for q in new_qs:
-            if q["target_word"].lower() not in seen_words:
-                questions_data.append(q)
-                seen_words.add(q["target_word"].lower())
-                new_count += 1
+    for q in questions_data:
+        pair = (q["target_word"].lower(), (q.get("cluster_title") or "").lower())
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        deduped.append(q)
+        if q.get("priority") == 0:
+            review_count += 1
+        elif q.get("priority") == 1:
+            new_count += 1
+    questions_data = deduped
 
-    # 3. Fill remaining slots with unseen questions for already-active words
-    remaining_slots = max(0, s.session_size - len(questions_data))
-    extra_count = 0
-    if remaining_slots > 0:
-        active_qs = db.get_active_word_new_questions(limit=remaining_slots, exclude_words=seen_words)
-        for q in active_qs:
-            if q["target_word"].lower() not in seen_words:
-                questions_data.append(q)
-                seen_words.add(q["target_word"].lower())
-                extra_count += 1
-    _session_log.info("Session %d: loaded %d questions (%d review, %d new, %d extra)",
-                      session_id, len(questions_data), review_count, new_count, extra_count)
+    _session_log.info("Session %d: loaded %d questions (%d review, %d new)",
+                      session_id, len(questions_data), review_count, new_count)
 
     # Shuffle banked questions for variety
     random.shuffle(questions_data)
@@ -323,7 +473,7 @@ async def api_session_start():
         "new_count": new_count,
         "target": s.session_size,
         "seen_ids": {q["id"] for q in questions_data},
-        "seen_words": seen_words,
+        "seen_pairs": seen_pairs,
     }
 
     # Top up the DB question bank in the background
@@ -353,40 +503,44 @@ async def api_session_answer(request: Request):
     if correct:
         session["correct"] += 1
 
-    # SRS update first (so archive check sees updated interval)
     db = get_db()
     s = get_settings()
-    quality = quality_from_answer(correct, time_seconds)
-    record_review(db, current_q["correct_word"], quality)
+    word = current_q["correct_word"]
+    cluster_title = current_q.get("cluster_title") or ""
 
-    # Record in DB + archive decision
-    archive_info = {"archived": False, "reason": "", "question_id": ""}
+    # SRS update on word_progress (includes archive decision)
+    quality = quality_from_answer(correct, time_seconds)
+    archive_info = record_review(
+        db, word, cluster_title, quality, s.archive_interval_days,
+    )
+
+    # Mark question as answered (historical)
+    response_time_ms = int(time_seconds * 1000) if time_seconds else None
     if current_q.get("id"):
-        archive_info = db.record_question_shown(
-            current_q["id"], correct, s.archive_interval_days
+        db.mark_question_answered(
+            current_q["id"], selected_index, correct,
+            response_time_ms, session_id,
         )
 
-    # Generate TTS for explanation + context sentence
+    # If not archived, trigger generation of replacement question
+    if not archive_info["archived"]:
+        await _ensure_question_buffer()
+
+    # Check TTS cache (non-blocking — audio was pre-generated when question was served)
     explanation_audio_hash = None
     context_audio_hash = None
-    try:
-        tts = _get_tts()
-        s = get_settings()
-        for text, attr in [
-            (current_q["explanation"], "explanation_audio_hash"),
-            (current_q["context_sentence"], "context_audio_hash"),
-        ]:
-            path = await get_or_create_audio(text, tts, db, s.audio_cache_full_path)
-            if path:
-                if attr == "explanation_audio_hash":
-                    explanation_audio_hash = sentence_hash(text)
+    for text, attr in [
+        (current_q.get("explanation", ""), "explanation"),
+        (current_q.get("context_sentence", ""), "context"),
+    ]:
+        if text:
+            h = sentence_hash(text)
+            cached = db.get_audio_cache(h)
+            if cached and Path(cached).exists():
+                if attr == "explanation":
+                    explanation_audio_hash = h
                 else:
-                    context_audio_hash = sentence_hash(text)
-    except Exception:
-        pass
-
-    # Check if we need to replenish the question buffer
-    await _ensure_question_buffer()
+                    context_audio_hash = h
 
     result = {
         "correct": correct,
@@ -396,7 +550,11 @@ async def api_session_answer(request: Request):
         "context_sentence": current_q["context_sentence"],
         "explanation_audio_hash": explanation_audio_hash,
         "context_audio_hash": context_audio_hash,
-        "archive": archive_info,
+        "archive": {
+            **archive_info,
+            "word": word,
+            "cluster_title": cluster_title,
+        },
         "session_progress": _session_progress(session),
     }
 
@@ -448,35 +606,24 @@ def _session_progress(session: dict) -> dict:
 
 
 def _load_more_questions(db, settings, session) -> list[dict]:
-    """Load additional questions from the DB, skipping already-seen ones."""
+    """Load additional questions from the DB, skipping already-seen pairs."""
     seen_ids = session["seen_ids"]
-    seen_words = session["seen_words"]
+    seen_pairs = session["seen_pairs"]
     need = max(0, session["target"] - len(session["questions"]))
     if need <= 0:
         return []
     questions: list[dict] = []
-    # 1. Due reviews
-    for q in db.get_review_questions(limit=need):
-        if q["id"] not in seen_ids:
-            questions.append(q)
-            seen_ids.add(q["id"])
-            seen_words.add(q["target_word"].lower())
-    # 2. New words
-    remaining = need - len(questions)
-    if remaining > 0:
-        for q in db.get_new_questions(limit=remaining):
-            if q["id"] not in seen_ids and q["target_word"].lower() not in seen_words:
-                questions.append(q)
-                seen_ids.add(q["id"])
-                seen_words.add(q["target_word"].lower())
-    # 3. Reinforcement
-    remaining = need - len(questions)
-    if remaining > 0:
-        for q in db.get_active_word_new_questions(limit=remaining, exclude_words=seen_words):
-            if q["id"] not in seen_ids:
-                questions.append(q)
-                seen_ids.add(q["id"])
-                seen_words.add(q["target_word"].lower())
+    for q in db.get_session_questions(limit=need + len(seen_ids)):
+        if q["id"] in seen_ids:
+            continue
+        pair = (q["target_word"].lower(), (q.get("cluster_title") or "").lower())
+        if pair in seen_pairs:
+            continue
+        questions.append(q)
+        seen_ids.add(q["id"])
+        seen_pairs.add(pair)
+        if len(questions) >= need:
+            break
     return questions
 
 
@@ -528,7 +675,7 @@ async def _get_next_question(session_id: int) -> dict:
     correct_index = indices.index(correct_index)
 
     target_word = q_data.get("correct_word", q_data.get("target_word", ""))
-    has_review = db.get_review(target_word) is not None
+    has_progress = db.get_word_progress(target_word, cluster_title or "") is not None
     question = {
         "session_id": session_id,
         "question_type": q_data.get("question_type", "fill_blank"),
@@ -541,12 +688,16 @@ async def _get_next_question(session_id: int) -> dict:
         "context_sentence": q_data.get("context_sentence", ""),
         "cluster_title": cluster_title,
         "id": q_data.get("id", ""),
-        "is_new": not has_review,
+        "is_new": not has_progress,
         "progress": _session_progress(session),
     }
 
     # Store for answer checking
     session["current_question"] = question
+
+    # Pre-generate TTS in background so audio is ready when the user answers
+    _pregenerate_audio(q_data.get("explanation", ""), q_data.get("context_sentence", ""))
+
     return question
 
 
@@ -653,17 +804,21 @@ async def api_session_summary():
     return {"sessions": history}
 
 
-# ── API: Question archive override ──────────────────────────────────────
+# ── API: Word-progress archive ─────────────────────────────────────────
 
-@app.post("/api/question/{question_id}/archive")
-async def api_question_archive(question_id: str, request: Request):
+@app.post("/api/word-progress/archive")
+async def api_word_progress_archive(request: Request):
     body = await request.json()
+    word = body.get("word", "")
+    cluster_title = body.get("cluster_title", "")
     archived = body.get("archived", True)
+    if not word:
+        raise HTTPException(400, "No word provided")
     db = get_db()
-    db.set_question_archived(question_id, archived)
-    # Replenish buffer if un-archiving reduced nothing, but archiving might
-    await _ensure_question_buffer()
-    return {"question_id": question_id, "archived": archived}
+    db.set_word_archived(word, cluster_title, archived)
+    if not archived:
+        await _ensure_question_buffer()
+    return {"word": word, "cluster_title": cluster_title, "archived": archived}
 
 
 # ── API: Question library ─────────────────────────────────────────────────
@@ -682,9 +837,10 @@ async def api_questions_archived():
 async def api_questions_reset_due(request: Request):
     body = await request.json()
     word = body.get("word", "")
+    cluster_title = body.get("cluster_title")
     if not word:
         raise HTTPException(400, "No word provided")
-    get_db().reset_word_due(word)
+    get_db().reset_word_due(word, cluster_title)
     return {"ok": True}
 
 

@@ -422,7 +422,7 @@ async def generate_question(
                 llm, cluster, cluster_words, data,
             )
 
-            _log.info("  Done")
+            _log.info("  Saved (%s)", cluster["title"])
             return Question(
                 id=str(uuid.uuid4()),
                 question_type=question_type,
@@ -458,7 +458,8 @@ async def generate_batch(
 
     # Generate for specific (word, cluster) pairs first
     if target_pairs:
-        for word, cluster_title in target_pairs:
+        total_pairs = len(target_pairs)
+        for pair_idx, (word, cluster_title) in enumerate(target_pairs, 1):
             cluster = db.get_cluster_by_title(cluster_title)
             if not cluster:
                 continue
@@ -466,12 +467,13 @@ async def generate_batch(
             word_info = next((w for w in cw if w["word"].lower() == word.lower()), None)
             if not word_info:
                 continue
+            _log.info("[%d/%d] Generating for '%s'", pair_idx, total_pairs, cluster_title)
             q = await generate_question(llm, db, cluster=cluster, target_word_info=word_info)
             if q:
                 db.save_question(q)
                 questions.append(q)
             else:
-                _log.warning("Batch: failed to generate for '%s' in '%s'", word, cluster_title)
+                _log.warning("[%d/%d] Failed for '%s' in '%s'", pair_idx, total_pairs, word, cluster_title)
 
     if target_words:
         # Generate questions for specific words (legacy)

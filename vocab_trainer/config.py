@@ -17,7 +17,6 @@ DEFAULTS = {
     "audio_cache_dir": "audio_cache",
     "db_path": "progress.db",
     "ollama_url": "http://localhost:11434",
-    "min_ready_questions": 3,
     "archive_interval_days": 21,
     "llm_thinking": False,
 }
@@ -35,7 +34,6 @@ class Settings:
     audio_cache_dir: str = DEFAULTS["audio_cache_dir"]
     db_path: str = DEFAULTS["db_path"]
     ollama_url: str = DEFAULTS["ollama_url"]
-    min_ready_questions: int = DEFAULTS["min_ready_questions"]
     archive_interval_days: int = DEFAULTS["archive_interval_days"]
     llm_thinking: bool = DEFAULTS["llm_thinking"]
 
@@ -73,7 +71,6 @@ class Settings:
             "audio_cache_dir": self.audio_cache_dir,
             "db_path": self.db_path,
             "ollama_url": self.ollama_url,
-            "min_ready_questions": self.min_ready_questions,
             "archive_interval_days": self.archive_interval_days,
             "llm_thinking": self.llm_thinking,
         }

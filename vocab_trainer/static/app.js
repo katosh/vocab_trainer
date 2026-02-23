@@ -496,13 +496,15 @@ async function submitAnswer(selectedIndex, questionData) {
         const archiveEl = document.getElementById('archive-status');
         const archiveText = document.getElementById('archive-text');
         const archiveToggle = document.getElementById('archive-toggle');
-        if (result.archive && result.archive.question_id) {
+        const archiveWord = result.archive && result.archive.word;
+        const archiveCluster = result.archive && result.archive.cluster_title;
+        if (archiveWord) {
             archiveEl.classList.remove('hidden', 'archived', 'kept');
             if (result.archive.archived) {
                 archiveEl.classList.add('archived');
                 archiveText.innerHTML = `<strong>Archived</strong> — ${result.archive.reason}`;
                 archiveToggle.textContent = 'Keep in rotation';
-                archiveToggle.onclick = () => toggleArchive(result.archive.question_id, false);
+                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, false);
             } else {
                 archiveEl.classList.add('kept');
                 const iv = result.archive.interval_days || 0;
@@ -512,7 +514,7 @@ async function submitAnswer(selectedIndex, questionData) {
                     : '';
                 archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
                 archiveToggle.textContent = 'Archive';
-                archiveToggle.onclick = () => toggleArchive(result.archive.question_id, true);
+                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, true);
             }
         } else {
             archiveEl.classList.add('hidden');
@@ -537,9 +539,30 @@ async function submitAnswer(selectedIndex, questionData) {
         stopAllAudio();
         const audio = document.getElementById('tts-audio');
         if (result.context_audio_hash) {
+            // Audio was pre-generated — play immediately
             audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
             audio.hidden = false;
             audio.play().catch(() => {});
+        } else if (result.context_sentence) {
+            // Audio not cached yet — show loading indicator and generate async
+            audio.hidden = true;
+            const audioStatus = document.getElementById('audio-loading');
+            if (audioStatus) {
+                audioStatus.textContent = 'Generating audio...';
+                audioStatus.classList.remove('hidden');
+            }
+            api('/api/tts/generate', 'POST', { text: result.context_sentence })
+                .then(ttsResult => {
+                    if (audioStatus) audioStatus.classList.add('hidden');
+                    if (ttsResult.audio_hash) {
+                        audio.src = `/api/audio/${ttsResult.audio_hash}.mp3`;
+                        audio.hidden = false;
+                        audio.play().catch(() => {});
+                    }
+                })
+                .catch(() => {
+                    if (audioStatus) audioStatus.classList.add('hidden');
+                });
         }
 
         // Update progress text (soft target)
@@ -592,9 +615,11 @@ async function submitAnswer(selectedIndex, questionData) {
     }
 }
 
-async function toggleArchive(questionId, archived) {
+async function toggleArchive(word, clusterTitle, archived) {
     try {
-        await api(`/api/question/${questionId}/archive`, 'POST', { archived });
+        await api('/api/word-progress/archive', 'POST', {
+            word, cluster_title: clusterTitle, archived,
+        });
         const archiveEl = document.getElementById('archive-status');
         const archiveText = document.getElementById('archive-text');
         const archiveToggle = document.getElementById('archive-toggle');
@@ -603,12 +628,12 @@ async function toggleArchive(questionId, archived) {
             archiveEl.classList.add('archived');
             archiveText.innerHTML = '<strong>Archived</strong> — manually archived';
             archiveToggle.textContent = 'Keep in rotation';
-            archiveToggle.onclick = () => toggleArchive(questionId, false);
+            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, false);
         } else {
             archiveEl.classList.add('kept');
             archiveText.innerHTML = '<strong>In rotation</strong> — restored';
             archiveToggle.textContent = 'Archive';
-            archiveToggle.onclick = () => toggleArchive(questionId, true);
+            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, true);
         }
     } catch (e) {
         console.error('Archive toggle failed:', e);
@@ -1163,35 +1188,26 @@ async function refreshLibrary() {
     }
 }
 
-function renderLibraryPanel(containerId, questions, isArchived) {
+function renderLibraryPanel(containerId, entries, isArchived) {
     const container = document.getElementById(containerId);
-    if (questions.length === 0) {
-        container.innerHTML = `<p class="library-empty">${isArchived ? 'No archived questions.' : 'No active questions yet. Start a quiz session to begin.'}</p>`;
+    if (entries.length === 0) {
+        container.innerHTML = `<p class="library-empty">${isArchived ? 'No archived words.' : 'No active words yet. Start a quiz session to begin.'}</p>`;
         return;
     }
 
-    // Group by word
-    const byWord = new Map();
-    for (const q of questions) {
-        const key = q.target_word.toLowerCase();
-        if (!byWord.has(key)) byWord.set(key, []);
-        byWord.get(key).push(q);
-    }
-
     container.innerHTML = '';
-    for (const [, wordQuestions] of byWord) {
-        const first = wordQuestions[0];
-        const totalShown = wordQuestions.reduce((s, q) => s + (q.times_shown || 0), 0);
-        const totalCorrect = wordQuestions.reduce((s, q) => s + (q.times_correct || 0), 0);
+    for (const entry of entries) {
+        const totalShown = entry.times_shown || 0;
+        const totalCorrect = entry.times_correct || 0;
 
         const item = document.createElement('div');
         item.className = 'question-list-item';
 
         // SRS status
         let srsText = '';
-        if (first.next_review) {
+        if (entry.next_review) {
             const now = new Date();
-            const due = new Date(first.next_review);
+            const due = new Date(entry.next_review);
             const diffMs = due - now;
             if (diffMs <= 0) {
                 srsText = 'due now';
@@ -1203,8 +1219,8 @@ function renderLibraryPanel(containerId, questions, isArchived) {
 
         let html = `<div class="qli-header">`;
         html += `<div class="qli-word-row">`;
-        html += `<strong class="qli-word">${first.target_word}</strong>`;
-        if (first.cluster_title) html += `<span class="qli-cluster">${first.cluster_title}</span>`;
+        html += `<strong class="qli-word">${entry.target_word}</strong>`;
+        if (entry.cluster_title) html += `<span class="qli-cluster">${entry.cluster_title}</span>`;
         html += `</div>`;
         html += `<div class="qli-stats">`;
         html += `<span>shown ${totalShown}x, ${totalCorrect}/${totalShown} correct</span>`;
@@ -1214,27 +1230,14 @@ function renderLibraryPanel(containerId, questions, isArchived) {
 
         html += `<div class="qli-actions">`;
         if (isArchived) {
-            html += `<button class="qli-btn" data-action="restore" data-ids='${JSON.stringify(wordQuestions.map(q => q.id))}'>Restore</button>`;
+            html += `<button class="qli-btn" data-action="restore" data-word="${entry.target_word}" data-cluster="${entry.cluster_title || ''}">Restore</button>`;
         } else {
-            html += `<button class="qli-btn" data-action="archive" data-ids='${JSON.stringify(wordQuestions.map(q => q.id))}'>Archive</button>`;
+            html += `<button class="qli-btn" data-action="archive" data-word="${entry.target_word}" data-cluster="${entry.cluster_title || ''}">Archive</button>`;
         }
-        html += `<button class="qli-btn" data-action="reset" data-word="${first.target_word}">Reset Due</button>`;
-        html += `</div>`;
-
-        // Expandable stems
-        html += `<div class="qli-stems hidden">`;
-        for (const q of wordQuestions) {
-            html += `<div class="qli-stem">${q.stem}</div>`;
-        }
+        html += `<button class="qli-btn" data-action="reset" data-word="${entry.target_word}" data-cluster="${entry.cluster_title || ''}">Reset Due</button>`;
         html += `</div>`;
 
         item.innerHTML = html;
-
-        // Click to expand
-        item.querySelector('.qli-header').addEventListener('click', () => {
-            item.classList.toggle('expanded');
-            item.querySelector('.qli-stems').classList.toggle('hidden');
-        });
 
         container.appendChild(item);
     }
@@ -1245,21 +1248,21 @@ function renderLibraryPanel(containerId, questions, isArchived) {
         if (!btn) return;
         e.stopPropagation();
         const action = btn.dataset.action;
+        const word = btn.dataset.word;
+        const cluster = btn.dataset.cluster || '';
 
         if (action === 'archive' || action === 'restore') {
-            const ids = JSON.parse(btn.dataset.ids);
             const archived = action === 'archive';
             btn.disabled = true;
             btn.textContent = archived ? 'Archiving...' : 'Restoring...';
-            for (const id of ids) {
-                await api(`/api/question/${id}/archive`, 'POST', { archived });
-            }
+            await api('/api/word-progress/archive', 'POST', {
+                word, cluster_title: cluster, archived,
+            });
             await refreshLibrary();
         } else if (action === 'reset') {
-            const word = btn.dataset.word;
             btn.disabled = true;
             btn.textContent = 'Resetting...';
-            await api('/api/questions/reset-due', 'POST', { word });
+            await api('/api/questions/reset-due', 'POST', { word, cluster_title: cluster });
             await refreshLibrary();
         }
     });
@@ -1355,8 +1358,6 @@ async function loadSettings() {
         document.getElementById('set-elevenlabs-model').value = s.elevenlabs_model || 'eleven_flash_v2_5';
         document.getElementById('set-session-size').value = s.session_size;
         document.getElementById('set-session-size-val').textContent = s.session_size;
-        document.getElementById('set-min-ready').value = s.min_ready_questions;
-        document.getElementById('set-min-ready-val').textContent = s.min_ready_questions;
         document.getElementById('set-archive-interval').value = s.archive_interval_days;
         document.getElementById('set-archive-interval-val').textContent = s.archive_interval_days;
     } catch (e) {
@@ -1366,10 +1367,6 @@ async function loadSettings() {
 
 document.getElementById('set-session-size').addEventListener('input', (e) => {
     document.getElementById('set-session-size-val').textContent = e.target.value;
-});
-
-document.getElementById('set-min-ready').addEventListener('input', (e) => {
-    document.getElementById('set-min-ready-val').textContent = e.target.value;
 });
 
 document.getElementById('set-archive-interval').addEventListener('input', (e) => {
@@ -1399,7 +1396,6 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
             tts_voice: getSelectedVoice(),
             elevenlabs_model: document.getElementById('set-elevenlabs-model').value,
             session_size: parseInt(document.getElementById('set-session-size').value),
-            min_ready_questions: parseInt(document.getElementById('set-min-ready').value),
             archive_interval_days: parseInt(document.getElementById('set-archive-interval').value),
         });
         showMessage('settings-message', 'Settings saved.', 'success');

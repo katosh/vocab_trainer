@@ -7,6 +7,7 @@ Usage:
   uv run python -m vocab_trainer status
   uv run python -m vocab_trainer import
   uv run python -m vocab_trainer generate [--count N]
+  uv run python -m vocab_trainer regenerate [--batch N] [--dry-run]
   uv run python -m vocab_trainer stats
 """
 from __future__ import annotations
@@ -36,11 +37,13 @@ def main():
         _import_vocab()
     elif command == "generate":
         _generate(args[1:])
+    elif command == "regenerate":
+        _regenerate(args[1:])
     elif command == "stats":
         _stats()
     else:
         print(f"Unknown command: {command}")
-        print("Commands: serve, stop, restart, status, import, generate, stats")
+        print("Commands: serve, stop, restart, status, import, generate, regenerate, stats")
         sys.exit(1)
 
 
@@ -133,7 +136,7 @@ def _serve(args: list[str]):
             host=host,
             port=port,
             reload=False,
-            timeout_graceful_shutdown=3,
+            timeout_graceful_shutdown=5,
         )
     finally:
         _remove_pid()
@@ -214,6 +217,147 @@ def _generate(args: list[str]):
 
     print(f"\nGenerated {len(questions)} questions")
     print(f"Question bank size: {db.get_question_bank_size()}")
+    db.close()
+
+
+def _regenerate(args: list[str]):
+    import json as _json
+    from datetime import datetime, timezone
+
+    batch_size = int(_parse_flag(args, "--batch", "10"))
+    dry_run = "--dry-run" in args
+
+    from vocab_trainer.config import load_settings
+    from vocab_trainer.db import Database
+
+    settings = load_settings()
+    db = Database(settings.db_full_path)
+
+    # Load all questions ordered for stable iteration
+    all_questions = db.get_all_questions_ordered()
+    total = len(all_questions)
+    if total == 0:
+        print("No questions in database.")
+        db.close()
+        sys.exit(1)
+
+    # Load log of already-regenerated questions
+    log_path = Path(__file__).resolve().parent.parent / "regenerated.json"
+    log_entries: list[dict] = []
+    done_ids: set[str] = set()
+    if log_path.exists():
+        log_entries = _json.loads(log_path.read_text())
+        done_ids = {e["id"] for e in log_entries}
+
+    # Filter to pending questions
+    pending = [q for q in all_questions if q["id"] not in done_ids]
+    batch = pending[:batch_size]
+
+    if not batch:
+        print(f"All {total} questions already regenerated.")
+        db.close()
+        return
+
+    # Set up LLM provider (same pattern as _generate)
+    if settings.llm_provider == "ollama":
+        from vocab_trainer.providers.llm_ollama import OllamaProvider
+        llm = OllamaProvider(base_url=settings.ollama_url, model=settings.llm_model)
+    elif settings.llm_provider == "anthropic":
+        from vocab_trainer.providers.llm_anthropic import AnthropicProvider
+        llm = AnthropicProvider()
+    elif settings.llm_provider == "openai":
+        from vocab_trainer.providers.llm_openai import OpenAIProvider
+        llm = OpenAIProvider()
+    else:
+        print(f"Unknown LLM provider: {settings.llm_provider}")
+        sys.exit(1)
+
+    from vocab_trainer.question_generator import generate_question
+
+    mode = "DRY RUN" if dry_run else "LIVE"
+    print(f"Regenerating batch of {len(batch)}/{total} questions ({mode})")
+    print(f"Using {settings.llm_provider}, skipping {len(done_ids)} already done")
+    print()
+
+    succeeded = 0
+    failed = 0
+
+    for i, q in enumerate(batch, 1):
+        cluster_title = q.get("cluster_title", "")
+        target_word = q["target_word"]
+        question_type = q["question_type"]
+        old_stem = q["stem"]
+
+        # Look up cluster + word info from DB
+        cluster = db.get_cluster_by_title(cluster_title) if cluster_title else None
+        if cluster is None:
+            print(f"  [{i}/{len(batch)}] SKIP {target_word} — cluster '{cluster_title}' not found")
+            failed += 1
+            continue
+
+        cluster_words = db.get_cluster_words(cluster["id"])
+        word_info = next(
+            (w for w in cluster_words if w["word"].lower() == target_word.lower()),
+            None,
+        )
+        if word_info is None:
+            print(f"  [{i}/{len(batch)}] SKIP {target_word} — not found in cluster '{cluster_title}'")
+            failed += 1
+            continue
+
+        # Generate new question
+        new_q = asyncio.run(
+            generate_question(llm, db, cluster=cluster, target_word_info=word_info, question_type=question_type)
+        )
+
+        if new_q is None:
+            print(f"  [{i}/{len(batch)}] FAIL {question_type:12s} {cluster_title}: {target_word}")
+            failed += 1
+            continue
+
+        # Truncate stems for display
+        old_short = old_stem[:60].replace("\n", " ")
+        new_short = new_q.stem[:60].replace("\n", " ")
+        print(f"  [{i}/{len(batch)}] OK   {question_type:12s} {cluster_title}: {target_word}")
+        print(f"         old: {old_short}")
+        print(f"         new: {new_short}")
+
+        # Update DB (unless dry run)
+        if not dry_run:
+            db.update_question_content(
+                question_id=q["id"],
+                stem=new_q.stem,
+                choices=new_q.choices,
+                correct_index=new_q.correct_index,
+                explanation=new_q.explanation,
+                context_sentence=new_q.context_sentence,
+                choice_details=new_q.choice_details,
+            )
+
+        # Append to log
+        log_entries.append({
+            "id": q["id"],
+            "target_word": target_word,
+            "cluster_title": cluster_title,
+            "question_type": question_type,
+            "old_stem": old_stem,
+            "new_stem": new_q.stem,
+            "old_explanation": q.get("explanation", ""),
+            "new_explanation": new_q.explanation,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "dry_run": dry_run,
+        })
+        succeeded += 1
+
+    # Write log
+    log_path.write_text(_json.dumps(log_entries, indent=2, ensure_ascii=False))
+
+    print()
+    done_total = len(done_ids) + succeeded
+    print(f"Batch: {succeeded} succeeded, {failed} failed")
+    print(f"Progress: {done_total}/{total} done")
+    if dry_run:
+        print("(dry run — no DB changes made)")
     db.close()
 
 

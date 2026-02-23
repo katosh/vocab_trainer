@@ -769,6 +769,22 @@ nav {
 .chat-send-btn:hover { background: var(--accent-hover); }
 .chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.chat-narration-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 10px;
+    font-size: 1rem;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    line-height: 1;
+}
+.chat-narration-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 /* Summary */
 #quiz-summary {
     text-align: center;
@@ -820,6 +836,12 @@ nav {
 
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+.audio-loading {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    padding: 4px 0;
 }
 
 /* Settings */

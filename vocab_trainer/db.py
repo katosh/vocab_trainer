@@ -287,14 +287,14 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_session_questions(self, limit: int = 20) -> list[dict]:
-        """Pull ready (unanswered) questions ordered by SRS priority.
+        """Pull ready (unanswered) questions for due reviews and new words only.
 
-        Excludes questions for archived word-clusters.
+        Excludes questions for archived word-clusters and word-clusters
+        that have been reviewed but are not yet due (SRS timing respected).
 
         Priority:
         0. Due word-clusters (freshly due first — optimal SRS timing)
         1. Never-reviewed word-clusters (new material)
-        2. Reviewed but not yet due (fallback)
         """
         now = datetime.now(timezone.utc).isoformat()
         rows = self.conn.execute("""
@@ -304,7 +304,6 @@ class Database:
                         THEN 0
                     WHEN wp.word IS NULL
                         THEN 1
-                    ELSE 2
                 END AS priority
             FROM questions q
             LEFT JOIN word_progress wp
@@ -312,9 +311,10 @@ class Database:
                 AND COALESCE(q.cluster_title, '') = wp.cluster_title
             WHERE q.answered_at IS NULL
               AND (wp.archived IS NULL OR wp.archived = 0)
+              AND (wp.word IS NULL OR wp.next_review <= ?)
             ORDER BY priority ASC, wp.next_review DESC, RANDOM()
             LIMIT ?
-        """, (now, limit)).fetchall()
+        """, (now, now, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def get_review_questions(self, limit: int = 20) -> list[dict]:
@@ -726,5 +726,26 @@ class Database:
             "INSERT OR REPLACE INTO audio_cache "
             "(sentence_hash, file_path, tts_provider, created_at) VALUES (?, ?, ?, ?)",
             (sentence_hash, file_path, tts_provider, now),
+        )
+        self.conn.commit()
+
+    def get_question_audio_texts(self) -> list[str]:
+        """Return all explanation and context_sentence texts from unanswered questions."""
+        rows = self.conn.execute(
+            "SELECT explanation, context_sentence FROM questions "
+            "WHERE answered_at IS NULL"
+        ).fetchall()
+        texts = []
+        for r in rows:
+            if r["explanation"]:
+                texts.append(r["explanation"])
+            if r["context_sentence"]:
+                texts.append(r["context_sentence"])
+        return texts
+
+    def delete_audio_cache(self, sentence_hash: str) -> None:
+        self.conn.execute(
+            "DELETE FROM audio_cache WHERE sentence_hash = ?",
+            (sentence_hash,),
         )
         self.conn.commit()

@@ -65,24 +65,31 @@ def quality_from_answer(correct: bool, time_seconds: float | None = None) -> int
     return 4  # correct, no timing info
 
 
-def record_review(db: Database, word: str, quality: int) -> None:
-    """Record a review of a word using SM-2.
+def record_review(
+    db: Database,
+    word: str,
+    cluster_title: str,
+    quality: int,
+    archive_interval_days: int = 21,
+) -> dict:
+    """Record a review of a (word, cluster) pair using SM-2.
 
     When a word is overdue and answered correctly, the scheduled interval is
-    boosted by half the overdue period before feeding into SM-2.  This gives
-    credit for remembering something longer than expected.  Wrong answers
-    still reset to 1 day (SM-2 handles that internally).
-    """
-    review = db.get_review(word)
+    boosted by half the overdue period before feeding into SM-2.
 
-    if review:
-        ef = review["easiness_factor"]
-        interval = review["interval_days"]
-        reps = review["repetitions"]
+    Returns {"archived": bool, "reason": str, "interval_days": float,
+             "archive_threshold": int}.
+    """
+    progress = db.get_word_progress(word, cluster_title)
+
+    if progress:
+        ef = progress["easiness_factor"]
+        interval = progress["interval_days"]
+        reps = progress["repetitions"]
 
         # Compute effective interval with overdue credit for correct answers
-        if quality >= 3 and review["next_review"]:
-            next_due = datetime.fromisoformat(review["next_review"])
+        if quality >= 3 and progress["next_review"]:
+            next_due = datetime.fromisoformat(progress["next_review"])
             now = datetime.now(timezone.utc)
             overdue_seconds = (now - next_due).total_seconds()
             if overdue_seconds > 0:
@@ -95,45 +102,29 @@ def record_review(db: Database, word: str, quality: int) -> None:
 
     new_ef, new_interval, new_reps = sm2_update(quality, ef, interval, reps)
     next_review = datetime.now(timezone.utc) + timedelta(days=new_interval)
+    correct = quality >= 3
 
-    db.upsert_review(
+    db.upsert_word_progress(
         word=word,
+        cluster_title=cluster_title,
         easiness_factor=new_ef,
         interval_days=new_interval,
         repetitions=new_reps,
         next_review=next_review.isoformat(),
-        correct=quality >= 3,
+        correct=correct,
     )
 
+    # Archive policy: archive when SRS interval proves sustained mastery
+    should_archive = False
+    reason = ""
+    if correct and new_interval >= archive_interval_days:
+        should_archive = True
+        reason = f"Mastered (interval {new_interval:.0f} days)"
+        db.set_word_archived(word, cluster_title, True)
 
-def select_session_words(
-    db: Database,
-    session_size: int = 20,
-) -> list[str]:
-    """Select words for a training session (on-the-fly fallback).
-
-    Only selects words that are in clusters (can generate questions).
-
-    Priority:
-    1. Overdue cluster words (sorted by staleness — most overdue first)
-    2. New cluster words (never reviewed)
-    """
-    words: list[str] = []
-
-    # 1. Due cluster words
-    due = db.get_due_cluster_words(limit=session_size)
-    for w in due:
-        words.append(w)
-        if len(words) >= session_size:
-            return words
-
-    # 2. New cluster words
-    remaining = session_size - len(words)
-    if remaining > 0:
-        new = db.get_new_cluster_words(limit=remaining)
-        for w in new:
-            words.append(w)
-            if len(words) >= session_size:
-                break
-
-    return words
+    return {
+        "archived": should_archive,
+        "reason": reason,
+        "interval_days": round(new_interval, 1),
+        "archive_threshold": archive_interval_days,
+    }
