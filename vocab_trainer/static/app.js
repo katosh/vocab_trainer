@@ -464,7 +464,7 @@ async function submitAnswer(selectedIndex, questionData) {
             result.correct ? 'var(--success)' : 'var(--error)';
 
         const explanationEl = document.getElementById('explanation');
-        explanationEl.textContent = result.explanation;
+        explanationEl.innerHTML = simpleMarkdown(result.explanation);
         explanationEl.onclick = () => speakText(result.explanation);
 
         const ctxEl = document.getElementById('context-sentence');
