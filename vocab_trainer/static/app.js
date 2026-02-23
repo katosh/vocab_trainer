@@ -700,7 +700,9 @@ async function toggleArchive(word, clusterTitle, archived, savedSrs) {
             repeatBtn.classList.add('hidden');
         } else {
             archiveEl.classList.add('kept');
-            archiveText.innerHTML = '<strong>In rotation</strong> — restored';
+            const iv = savedSrs ? savedSrs.interval_days : 0;
+            const restoredInfo = iv > 0 ? ` — interval ${Math.round(iv)} days` : '';
+            archiveText.innerHTML = `<strong>In rotation</strong>${restoredInfo}`;
             archiveToggle.textContent = 'Archive';
             archiveToggle.onclick = () => toggleArchive(word, clusterTitle, true, savedSrs);
             if (savedSrs) {
