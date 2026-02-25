@@ -201,8 +201,5 @@ def format_cluster_info(entries: list[dict]) -> str:
 def format_enrichment(extra_words: list[dict]) -> str:
     if not extra_words:
         return ""
-    words_str = ", ".join(f"**{w['word']}** ({w['definition'][:60]})" for w in extra_words)
-    return (
-        f"For richer context, you may weave in these vocabulary words: {words_str}\n"
-        "But only if they fit naturally — do not force them."
-    )
+    words_str = ", ".join(w["word"] for w in extra_words)
+    return f"Vocabulary palette (for inspiration, not required): {words_str}"

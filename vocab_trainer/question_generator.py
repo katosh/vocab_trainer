@@ -381,8 +381,11 @@ async def generate_question(
     if question_type is None:
         question_type = _pick_question_type()
 
-    # Get enrichment words
-    enrichment = db.get_random_words(limit=random.randint(5, 10))
+    # Get enrichment words (exclude cluster words to avoid overlap)
+    cluster_word_names = [w["word"] for w in cluster_words]
+    enrichment = db.get_random_words(
+        limit=random.randint(15, 30), exclude=cluster_word_names,
+    )
 
     # Format prompt
     prompt_template = PROMPTS[question_type]

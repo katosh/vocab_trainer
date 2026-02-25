@@ -35,16 +35,16 @@ class TestFormatEnrichment:
         result = format_enrichment(extra)
         assert "ebullient" in result
         assert "sanguine" in result
-        assert "weave in" in result
+        assert "palette" in result.lower()
 
     def test_empty(self):
         assert format_enrichment([]) == ""
 
-    def test_truncates_long_definition(self):
-        extra = [{"word": "test", "definition": "a" * 100}]
+    def test_no_definitions_in_output(self):
+        extra = [{"word": "test", "definition": "some long definition here"}]
         result = format_enrichment(extra)
-        # Definition should be truncated to 60 chars
-        assert "a" * 60 in result
+        # Ambient style: only word names, no definitions
+        assert "definition" not in result
         assert "a" * 61 not in result
 
 

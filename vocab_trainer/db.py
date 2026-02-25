@@ -557,10 +557,20 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_random_words(self, limit: int = 10) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM words ORDER BY RANDOM() LIMIT ?", (limit,)
-        ).fetchall()
+    def get_random_words(
+        self, limit: int = 10, exclude: list[str] | None = None,
+    ) -> list[dict]:
+        if exclude:
+            placeholders = ",".join("?" * len(exclude))
+            rows = self.conn.execute(
+                f"SELECT * FROM words WHERE word NOT IN ({placeholders}) "
+                "ORDER BY RANDOM() LIMIT ?",
+                (*exclude, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM words ORDER BY RANDOM() LIMIT ?", (limit,)
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def get_word_cluster_question_counts(self) -> list[dict]:
