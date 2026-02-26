@@ -71,7 +71,7 @@ let chatHistory = [];
 let chatStreaming = false;
 let activeAudioElements = [];  // all playing/playable audio to stop on navigation
 let pendingAudioTimeout = null;
-let autoCompareEnabled = localStorage.getItem('autoCompare') === 'true';
+let autoCompareEnabled = localStorage.getItem('autoCompare') !== 'false';
 let thinkingEnabled = localStorage.getItem('llmThinking') === 'true';
 let narrationQueue = null;
 let sessionEventSource = null;
@@ -249,6 +249,7 @@ function switchView(view) {
     document.getElementById(`view-${view}`).classList.add('active');
 
     if (view === 'dashboard') refreshStats();
+    if (view === 'quiz' && !currentSessionId) startSession();
     if (view === 'library') refreshLibrary();
     if (view === 'settings') loadSettings();
 }
@@ -260,68 +261,30 @@ async function refreshStats() {
         const stats = await api('/api/stats');
         document.getElementById('stat-total').textContent =
             stats.total_words + ' / ' + stats.total_clusters;
-        document.getElementById('stat-due').textContent = stats.words_due;
+        document.getElementById('stat-active').textContent =
+            stats.active_words + ' / ' + stats.words_due;
         document.getElementById('stat-reviewed').textContent = stats.words_reviewed;
         document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
         document.getElementById('stat-sessions').textContent = stats.total_sessions;
-        document.getElementById('stat-active').textContent = stats.active_words;
+        document.getElementById('stat-archived').textContent = stats.questions_archived;
     } catch (e) {
         console.error('Failed to load stats:', e);
     }
 }
 
 document.getElementById('btn-start-session').addEventListener('click', startSession);
-document.getElementById('btn-import').addEventListener('click', importVocab);
-document.getElementById('btn-generate').addEventListener('click', generateQuestions);
-
-async function importVocab() {
-    const btn = document.getElementById('btn-import');
-    btn.disabled = true;
-    btn.textContent = 'Importing...';
-    showMessage('dashboard-message', 'Importing vocabulary files...', 'info');
-
-    try {
-        const result = await api('/api/import', 'POST');
-        showMessage('dashboard-message',
-            `Imported ${result.words_imported} words, ${result.clusters_imported} clusters. ` +
-            `Total: ${result.total_words} words, ${result.total_clusters} clusters.`,
-            'success');
-        refreshStats();
-    } catch (e) {
-        showMessage('dashboard-message', 'Import failed: ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Import Vocabulary';
-    }
-}
-
-async function generateQuestions() {
-    const btn = document.getElementById('btn-generate');
-    btn.disabled = true;
-    btn.textContent = 'Generating...';
-    showMessage('dashboard-message', 'Generating questions (this may take a minute)...', 'info');
-
-    try {
-        const result = await api('/api/generate', 'POST', { count: 10 });
-        showMessage('dashboard-message',
-            `Generated ${result.generated} questions. Bank size: ${result.bank_size}`,
-            'success');
-        refreshStats();
-    } catch (e) {
-        showMessage('dashboard-message', 'Generation failed: ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Generate Questions';
-    }
-}
 
 // ── Quiz Session ─────────────────────────────────────────────────────────
 
+let sessionStarting = false;
+
 async function startSession() {
+    if (sessionStarting) return;
     await doStartSession();
 }
 
 async function doStartSession() {
+    sessionStarting = true;
     switchView('quiz');
     showQuizState('loading');
 
@@ -353,6 +316,8 @@ async function doStartSession() {
         showQuizState('idle');
         switchView('dashboard');
         showMessage('dashboard-message', 'Failed to start session: ' + e.message, 'error');
+    } finally {
+        sessionStarting = false;
     }
 }
 
