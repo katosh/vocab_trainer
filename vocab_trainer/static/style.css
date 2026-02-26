@@ -751,6 +751,56 @@ nav {
     opacity: 0.6;
 }
 
+/* ── Narration loading / active states ───────────────────────────── */
+
+.speaking-loading::after {
+    content: '' !important;
+    width: 0.85em !important;
+    height: 0.85em !important;
+    border: 2px solid var(--border) !important;
+    border-top-color: var(--accent) !important;
+    border-radius: 50% !important;
+    background: none !important;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+    animation: spin 0.7s linear infinite !important;
+    opacity: 1 !important;
+}
+
+.speaking-active::after {
+    opacity: 0.8 !important;
+    animation: speakingPulse 1s ease-in-out infinite !important;
+}
+
+@keyframes speakingPulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
+/* Loading state for elements without ::after (choice buttons, detail text) */
+.choice-btn.speaking-loading,
+.choice-detail-text.speaking-loading {
+    position: relative;
+}
+
+.choice-btn.speaking-loading::after,
+.choice-detail-text.speaking-loading::after {
+    content: '' !important;
+    display: inline-block !important;
+    width: 0.85em !important;
+    height: 0.85em !important;
+    margin-left: 8px;
+    vertical-align: middle;
+    border: 2px solid var(--border) !important;
+    border-top-color: var(--accent) !important;
+    border-radius: 50% !important;
+    background: none !important;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+    animation: spin 0.7s linear infinite !important;
+    opacity: 1 !important;
+}
+
 .explanation {
     font-size: 0.93rem;
     color: var(--text);

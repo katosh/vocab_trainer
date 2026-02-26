@@ -479,7 +479,7 @@ function showQuestion(data) {
             const sel = window.getSelection();
             if (sel && sel.toString().length > 0) return;
             if (btn.classList.contains('disabled')) {
-                speakText(choice);
+                speakText(choice, btn);
                 return;
             }
             submitAnswer(i, data);
@@ -523,7 +523,7 @@ async function submitAnswer(selectedIndex, questionData) {
 
         const explanationEl = document.getElementById('explanation');
         explanationEl.innerHTML = simpleMarkdown(result.explanation);
-        explanationEl.onclick = () => speakText(result.explanation);
+        explanationEl.onclick = () => speakText(result.explanation, explanationEl);
 
         const ctxEl = document.getElementById('context-sentence');
         ctxEl.textContent = result.context_sentence;
@@ -533,7 +533,7 @@ async function submitAnswer(selectedIndex, questionData) {
                 stopAllAudio();
                 ttsAudio.play().catch(() => {});
             } else {
-                speakText(result.context_sentence);
+                speakText(result.context_sentence, ctxEl);
             }
         };
 
@@ -564,7 +564,8 @@ async function submitAnswer(selectedIndex, questionData) {
                 `</div>`;
 
             item.innerHTML = html;
-            item.querySelector('.choice-detail-text').onclick = () => speakText(d.word);
+            const detailText = item.querySelector('.choice-detail-text');
+            detailText.onclick = () => speakText(d.word, detailText);
             detailsEl.appendChild(item);
         });
 
@@ -966,16 +967,25 @@ function appendChatMessage(role, text) {
     return el;
 }
 
-async function speakText(text) {
+async function speakText(text, sourceEl) {
     stopAllAudio();
+    if (sourceEl) sourceEl.classList.add('speaking-loading');
     try {
         const result = await api('/api/tts/generate', 'POST', { text });
         if (result.audio_hash) {
             const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
             activeAudioElements.push(audio);
+            if (sourceEl) {
+                audio.onended = () => sourceEl.classList.remove('speaking-active');
+                sourceEl.classList.remove('speaking-loading');
+                sourceEl.classList.add('speaking-active');
+            }
             audio.play().catch(() => {});
+        } else if (sourceEl) {
+            sourceEl.classList.remove('speaking-loading');
         }
     } catch (e) {
+        if (sourceEl) sourceEl.classList.remove('speaking-loading');
         console.error('TTS failed:', e);
     }
 }
