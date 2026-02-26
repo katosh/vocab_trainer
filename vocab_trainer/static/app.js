@@ -1,5 +1,68 @@
 // Vocab Trainer — SPA Client
 
+// ── Theme Management ──────────────────────────────────────────────────────
+(function initTheme() {
+    const toggle = document.getElementById('theme-toggle');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+    }
+
+    toggle.addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-theme');
+        const next = current === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+        localStorage.setItem('theme', next);
+    });
+
+    // Listen for OS theme changes (applies only when no manual override)
+    prefersDark.addEventListener('change', (e) => {
+        if (!localStorage.getItem('theme')) {
+            applyTheme(e.matches ? 'dark' : 'light');
+        }
+    });
+})();
+
+// ── SVG Icons (consistent rendering across all platforms) ─────────────────
+const ICONS = {
+    pause: '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
+    play:  '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>',
+    stop:  '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
+};
+
+// ── iOS Audio Unlock ──────────────────────────────────────────────────────
+// iOS Safari requires the first audio playback to be initiated by a user
+// gesture.  We unlock both AudioContext and HTMLAudioElement on first tap/click.
+(function initAudioUnlock() {
+    let unlocked = false;
+    function unlock() {
+        if (unlocked) return;
+        unlocked = true;
+        // Unlock Web Audio API (needed for some audio operations)
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const buf = ctx.createBuffer(1, 1, 22050);
+            const src = ctx.createBufferSource();
+            src.buffer = buf;
+            src.connect(ctx.destination);
+            src.start(0);
+            if (ctx.state === 'suspended') ctx.resume();
+        } catch (e) { /* AudioContext not available */ }
+        // Unlock HTMLAudioElement by playing a tiny silent WAV
+        try {
+            const a = document.getElementById('tts-audio');
+            if (a) {
+                a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+                a.play().then(() => { a.pause(); a.src = ''; }).catch(() => {});
+            }
+        } catch (e) { /* silent fail */ }
+    }
+    document.addEventListener('touchstart', unlock, { once: true });
+    document.addEventListener('touchend', unlock, { once: true });
+    document.addEventListener('click', unlock, { once: true });
+})();
+
 const API = '';
 let currentSessionId = null;
 let questionStartTime = null;
@@ -139,7 +202,7 @@ const narrationToggle = {
         this._pauseFn = pauseFn;
         this._resumeFn = resumeFn;
         this._cleanupFn = cleanupFn;
-        btn.textContent = '⏸';
+        btn.innerHTML = ICONS.pause;
         btn.title = 'Pause narration';
         btn.classList.remove('hidden');
         btn.onclick = () => this.toggle();
@@ -150,13 +213,13 @@ const narrationToggle = {
             this._paused = false;
             if (this._resumeFn) this._resumeFn();
             const btn = this._get();
-            btn.textContent = '⏸';
+            btn.innerHTML = ICONS.pause;
             btn.title = 'Pause narration';
         } else {
             this._paused = true;
             if (this._pauseFn) this._pauseFn();
             const btn = this._get();
-            btn.textContent = '▶';
+            btn.innerHTML = ICONS.play;
             btn.title = 'Resume narration';
         }
     },
@@ -910,7 +973,7 @@ async function speakText(text) {
         if (result.audio_hash) {
             const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
             activeAudioElements.push(audio);
-            audio.play();
+            audio.play().catch(() => {});
         }
     } catch (e) {
         console.error('TTS failed:', e);
@@ -922,7 +985,7 @@ function addNarrateButton(msgEl, rawText) {
     bar.className = 'chat-msg-actions';
     const btn = document.createElement('button');
     btn.className = 'narrate-btn';
-    btn.textContent = '\u25B6 Narrate';
+    btn.innerHTML = ICONS.play + ' Narrate';
     btn.onclick = () => narrateText(btn, rawText);
     bar.appendChild(btn);
     msgEl.appendChild(bar);
@@ -931,7 +994,7 @@ function addNarrateButton(msgEl, rawText) {
 async function narrateText(btn, text) {
     stopAllAudio();
     btn.disabled = true;
-    btn.textContent = '\u25B6 Generating...';
+    btn.innerHTML = ICONS.play + ' Generating...';
     try {
         const result = await api('/api/tts/generate', 'POST', { text });
         if (result.audio_hash) {
@@ -939,19 +1002,19 @@ async function narrateText(btn, text) {
             activeAudioElements.push(audio);
             btn.disabled = false;
             audio.onended = () => {
-                btn.textContent = '▶ Narrate';
+                btn.innerHTML = ICONS.play + ' Narrate';
                 narrationToggle.hide();
             };
             btn.onclick = () => narrateText(btn, text);
-            btn.textContent = '■ Stop';
+            btn.innerHTML = ICONS.stop + ' Stop';
             narrationToggle.show(
                 () => audio.pause(),
-                () => audio.play(),
+                () => audio.play().catch(() => {}),
             );
-            audio.play();
+            audio.play().catch(() => {});
         }
     } catch (e) {
-        btn.textContent = '\u25B6 Narrate';
+        btn.innerHTML = ICONS.play + ' Narrate';
         btn.disabled = false;
         console.error('Narration failed:', e);
     }
@@ -1235,10 +1298,10 @@ async function sendChatMessage(message) {
                 bar.className = 'chat-msg-actions';
                 const btn = document.createElement('button');
                 btn.className = 'narrate-btn';
-                btn.textContent = '■ Stop';
+                btn.innerHTML = ICONS.stop + ' Stop';
                 const queue = narrationQueue;
                 const switchToNarrate = () => {
-                    btn.textContent = '▶ Narrate';
+                    btn.innerHTML = ICONS.play + ' Narrate';
                     btn.disabled = false;
                     btn.onclick = () => narrateText(btn, fullResponse);
                     narrationToggle.hide();
@@ -1294,7 +1357,8 @@ async function refreshLibrary() {
 function renderLibraryPanel(containerId, entries, isArchived) {
     const container = document.getElementById(containerId);
     if (entries.length === 0) {
-        container.innerHTML = `<p class="library-empty">${isArchived ? 'No archived words.' : 'No active words yet. Start a quiz session to begin.'}</p>`;
+        const msg = isArchived ? 'No archived words.' : 'No active words yet. Start a quiz session to begin.';
+        container.innerHTML = `<p class="library-empty"><img class="library-illustration" src="/img/library-empty.png" alt="" width="160" height="160">${msg}</p>`;
         return;
     }
 

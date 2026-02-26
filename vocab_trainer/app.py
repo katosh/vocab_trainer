@@ -354,6 +354,11 @@ async def script():
                         headers={"Cache-Control": "no-cache"})
 
 
+img_dir = static_dir / "img"
+if img_dir.is_dir():
+    app.mount("/img", StaticFiles(directory=img_dir), name="images")
+
+
 # ── API: Stats ────────────────────────────────────────────────────────────
 
 @app.get("/api/stats")
