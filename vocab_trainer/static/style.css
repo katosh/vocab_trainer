@@ -716,16 +716,50 @@ nav {
     margin-bottom: 12px;
 }
 
+/* Tappable narration areas — speaker icon hint */
+.explanation,
+.context-sentence {
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.explanation::after,
+.context-sentence::after {
+    content: '';
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-left: 5px;
+    vertical-align: middle;
+    opacity: 0.3;
+    background: currentColor;
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 9v6h4l5 5V4L7 9H3z'/%3E%3Cpath d='M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z'/%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 9v6h4l5 5V4L7 9H3z'/%3E%3Cpath d='M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z'/%3E%3C/svg%3E");
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    transition: opacity 0.15s;
+}
+
+.explanation:hover::after,
+.context-sentence:hover::after,
+.explanation:active::after,
+.context-sentence:active::after {
+    opacity: 0.6;
+}
+
 .explanation {
     font-size: 0.93rem;
     color: var(--text);
     margin-bottom: 12px;
     line-height: 1.65;
-    cursor: pointer;
 }
 
-.explanation:hover {
-    color: var(--accent);
+@media (hover: hover) {
+    .explanation:hover {
+        color: var(--accent);
+    }
 }
 
 .context-sentence {
@@ -737,14 +771,14 @@ nav {
     background: var(--bg);
     border-radius: var(--radius-sm);
     border-left: 3px solid var(--accent);
-    cursor: pointer;
-    transition: all 0.15s;
     text-align: left;
 }
 
-.context-sentence:hover {
-    border-left-color: var(--accent-hover);
-    background: var(--accent-subtle);
+@media (hover: hover) {
+    .context-sentence:hover {
+        border-left-color: var(--accent-hover);
+        background: var(--accent-subtle);
+    }
 }
 
 
