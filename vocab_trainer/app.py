@@ -328,7 +328,7 @@ async def lifespan(app_instance):
     if _db:
         _db.close()
 
-app = FastAPI(title="Vocab Trainer", lifespan=lifespan)
+app = FastAPI(title="Wiseacre", lifespan=lifespan)
 
 
 # ── Static files ──────────────────────────────────────────────────────────
@@ -352,6 +352,16 @@ async def style():
 async def script():
     return FileResponse(static_dir / "app.js", media_type="application/javascript",
                         headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse(static_dir / "favicon.ico", media_type="image/x-icon")
+
+
+@app.get("/apple-touch-icon.png")
+async def apple_touch_icon():
+    return FileResponse(static_dir / "apple-touch-icon.png", media_type="image/png")
 
 
 img_dir = static_dir / "img"

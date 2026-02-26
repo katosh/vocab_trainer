@@ -1,4 +1,4 @@
-// Vocab Trainer — SPA Client
+// Wiseacre — SPA Client
 
 // ── Theme Management ──────────────────────────────────────────────────────
 (function initTheme() {

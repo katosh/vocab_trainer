@@ -126,9 +126,9 @@ def _serve(args: list[str]):
     if host == "0.0.0.0":
         import socket
         local_ip = socket.gethostbyname(socket.gethostname())
-        print(f"Starting Vocab Trainer on http://{local_ip}:{port}")
+        print(f"Starting Wiseacre on http://{local_ip}:{port}")
     else:
-        print(f"Starting Vocab Trainer on http://{host}:{port}")
+        print(f"Starting Wiseacre on http://{host}:{port}")
     print("Press Ctrl+C to stop\n")
     try:
         uvicorn.run(
@@ -369,7 +369,7 @@ def _stats():
     db = Database(settings.db_full_path)
     stats = db.get_stats()
 
-    print("Vocab Trainer Stats")
+    print("Wiseacre Stats")
     print("=" * 40)
     print(f"Total words:        {stats['total_words']}")
     print(f"Total clusters:     {stats['total_clusters']}")

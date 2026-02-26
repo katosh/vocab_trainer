@@ -1,4 +1,4 @@
-# Vocab Trainer
+# <img src="vocab_trainer/static/img/logo.png" width="36" height="36" align="top"> Wiseacre
 
 A vocabulary trainer that teaches the precise differences between similar words. Instead of drilling isolated definitions, it groups near-synonyms and close alternatives into clusters and generates quiz scenarios that force you to distinguish between them — building an intuitive feel for which word fits which context.
 

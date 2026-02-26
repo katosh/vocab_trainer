@@ -78,7 +78,7 @@ class TestStaticFiles:
         client, _, _ = test_app
         resp = client.get("/")
         assert resp.status_code == 200
-        assert "Vocab Trainer" in resp.text
+        assert "Wiseacre" in resp.text
 
     def test_css(self, test_app):
         client, _, _ = test_app
