@@ -393,7 +393,7 @@ function showQuestion(data) {
     };
     const typeEl = document.getElementById('question-type');
     typeEl.textContent = typeLabels[data.question_type] || data.question_type;
-    document.getElementById('question-badge').textContent = '';
+    document.getElementById('question-badge').style.display = 'none';
 
     // Cluster
     document.getElementById('cluster-title').textContent =

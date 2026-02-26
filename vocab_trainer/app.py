@@ -439,6 +439,11 @@ async def api_session_start():
 
     _session_log.info("Session %d: loaded %d questions (%d review, %d new)",
                       session_id, len(questions_data), review_count, new_count)
+    if questions_data:
+        first_few = [(q["target_word"], q.get("cluster_title", "")[:30],
+                       "DUE" if q.get("priority") == 0 else "NEW")
+                      for q in questions_data[:5]]
+        _session_log.info("  First questions: %s", first_few)
 
     # DB already returns due reviews first (freshly due before long-overdue),
     # then new words in random order — no need to reshuffle.
@@ -658,7 +663,6 @@ async def _get_next_question(session_id: int) -> dict:
     correct_index = indices.index(correct_index)
 
     target_word = q_data.get("correct_word", q_data.get("target_word", ""))
-    has_progress = db.get_word_progress(target_word, cluster_title or "") is not None
     question = {
         "session_id": session_id,
         "question_type": q_data.get("question_type", "fill_blank"),
@@ -671,7 +675,6 @@ async def _get_next_question(session_id: int) -> dict:
         "context_sentence": q_data.get("context_sentence", ""),
         "cluster_title": cluster_title,
         "id": q_data.get("id", ""),
-        "is_new": not has_progress,
         "progress": _session_progress(session),
     }
 
