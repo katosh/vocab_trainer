@@ -256,6 +256,16 @@ def _validate_question(data: dict, target_word: str, question_type: str = "fill_
         if blank_count > 1:
             return f"stem must have exactly one blank (found {blank_count})"
 
+    # Stem must not name any of the answer choices (gives away the answer)
+    stem_lower = data["stem"].lower()
+    mentioned = [c for c in data["choices"] if c.lower() in stem_lower]
+    if mentioned:
+        return (
+            f"The stem must NEVER mention any of the answer choices. "
+            f"Your stem mentions: {mentioned}. Rewrite the stem so it describes "
+            f"the concept without naming the words."
+        )
+
     # Context sentence should contain the target word (or a morphological form)
     ctx = data.get("context_sentence", "").lower()
     if target_lower not in ctx:
