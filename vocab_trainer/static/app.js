@@ -71,8 +71,8 @@ let chatHistory = [];
 let chatStreaming = false;
 let activeAudioElements = [];  // all playing/playable audio to stop on navigation
 let pendingAudioTimeout = null;
-let autoCompareEnabled = localStorage.getItem('autoCompare') !== 'false';
-let thinkingEnabled = localStorage.getItem('llmThinking') === 'true';
+let autoNarrateEnabled = true;
+let thinkingEnabled = false;
 let narrationQueue = null;
 let sessionEventSource = null;
 let waitingForQuestion = false;
@@ -170,9 +170,9 @@ const chatScroll = {
     },
 };
 
-function setAutoCompare(enabled) {
-    autoCompareEnabled = enabled;
-    localStorage.setItem('autoCompare', enabled);
+function setAutoNarrate(enabled) {
+    autoNarrateEnabled = enabled;
+    api('/api/settings', 'PUT', { auto_narrate: enabled }).catch(() => {});
 }
 
 function stopAllAudio() {
@@ -249,7 +249,7 @@ function switchView(view) {
     document.getElementById(`view-${view}`).classList.add('active');
 
     if (view === 'dashboard') refreshStats();
-    if (view === 'quiz' && !currentSessionId) startSession();
+    if (view === 'quiz' && !currentSessionId) resumeOrStartSession();
     if (view === 'library') refreshLibrary();
     if (view === 'settings') loadSettings();
 }
@@ -272,7 +272,7 @@ async function refreshStats() {
     }
 }
 
-document.getElementById('btn-start-session').addEventListener('click', startSession);
+document.getElementById('btn-start-session').addEventListener('click', resumeOrStartSession);
 
 // ── Quiz Session ─────────────────────────────────────────────────────────
 
@@ -280,6 +280,44 @@ let sessionStarting = false;
 
 async function startSession() {
     if (sessionStarting) return;
+    await doStartSession();
+}
+
+async function resumeOrStartSession() {
+    if (sessionStarting) return;
+    sessionStarting = true;
+    try {
+        const active = await api('/api/session/active');
+        if (active.active) {
+            currentSessionId = active.session_id;
+            connectSessionEvents(active.session_id);
+            switchView('quiz');
+            if (!active.question_answered && active.current_question) {
+                // Resume with the unanswered question
+                showQuestion(active.current_question);
+            } else {
+                // Between questions — fetch the next one
+                showQuizState('loading');
+                const nextQ = await api('/api/session/next', 'POST', {
+                    session_id: active.session_id,
+                });
+                if (nextQ.generating) {
+                    document.getElementById('quiz-loading-text').textContent = 'Generating question...';
+                    waitingForQuestion = true;
+                } else if (nextQ.session_complete) {
+                    showQuizState('idle');
+                    switchView('dashboard');
+                } else {
+                    showQuestion(nextQ);
+                }
+            }
+            return;
+        }
+    } catch (e) {
+        // Fall through to start a new session
+    } finally {
+        sessionStarting = false;
+    }
     await doStartSession();
 }
 
@@ -832,7 +870,7 @@ const CHAT_PROMPTS = {
         'Compare all four choices. Start by contrasting "{chosen}" with "{correct}" — why doesn\'t my choice work here and what makes the correct answer fit? Then cover the other two.',
 };
 
-let selectedComplexity = localStorage.getItem('contextLevel') || 'simple';
+let selectedComplexity = 'simple';
 
 // Complexity selector — restore active state and persist choice
 document.querySelectorAll('.complexity-btn').forEach(btn => {
@@ -844,7 +882,7 @@ document.querySelectorAll('.complexity-btn').forEach(btn => {
         document.querySelectorAll('.complexity-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         selectedComplexity = btn.dataset.level;
-        localStorage.setItem('contextLevel', selectedComplexity);
+        api('/api/settings', 'PUT', { context_level: selectedComplexity }).catch(() => {});
     });
 });
 
@@ -871,9 +909,9 @@ document.querySelectorAll('.chat-btn').forEach(btn => {
 
 // Auto-compare toggle
 const autoCompareCheckbox = document.getElementById('auto-compare-toggle');
-autoCompareCheckbox.checked = autoCompareEnabled;
+autoCompareCheckbox.checked = autoNarrateEnabled;
 autoCompareCheckbox.addEventListener('change', () => {
-    setAutoCompare(autoCompareCheckbox.checked);
+    setAutoNarrate(autoCompareCheckbox.checked);
 });
 
 // Thinking toggle
@@ -881,7 +919,6 @@ const thinkingCheckbox = document.getElementById('thinking-toggle');
 thinkingCheckbox.checked = thinkingEnabled;
 thinkingCheckbox.addEventListener('change', () => {
     thinkingEnabled = thinkingCheckbox.checked;
-    localStorage.setItem('llmThinking', thinkingEnabled);
     api('/api/settings', 'PUT', { llm_thinking: thinkingEnabled }).catch(() => {});
 });
 
@@ -1187,7 +1224,7 @@ async function sendChatMessage(message) {
     document.querySelectorAll('.chat-btn, .chat-send-btn, .word-action-btn').forEach(b => b.disabled = true);
 
     // Set up auto-narration if enabled
-    const autoNarrating = autoCompareEnabled;
+    const autoNarrating = autoNarrateEnabled;
     if (autoNarrating) {
         narrationQueue = new NarrationQueue(narrationQueue);
         const q = narrationQueue;
@@ -1575,11 +1612,20 @@ function showMessage(elementId, text, type) {
 chatScroll.init();
 refreshStats();
 
-// Sync thinking toggle from backend settings
+// Sync preferences from backend settings
 api('/api/settings').then(s => {
     if (typeof s.llm_thinking === 'boolean') {
         thinkingEnabled = s.llm_thinking;
-        localStorage.setItem('llmThinking', thinkingEnabled);
         document.getElementById('thinking-toggle').checked = thinkingEnabled;
+    }
+    if (typeof s.auto_narrate === 'boolean') {
+        autoNarrateEnabled = s.auto_narrate;
+        document.getElementById('auto-compare-toggle').checked = autoNarrateEnabled;
+    }
+    if (s.context_level) {
+        selectedComplexity = s.context_level;
+        document.querySelectorAll('.complexity-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.level === selectedComplexity);
+        });
     }
 }).catch(() => {});

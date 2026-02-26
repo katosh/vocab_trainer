@@ -19,6 +19,8 @@ DEFAULTS = {
     "ollama_url": "http://localhost:11434",
     "archive_interval_days": 21,
     "llm_thinking": False,
+    "auto_narrate": True,
+    "context_level": "simple",
 }
 
 
@@ -36,6 +38,8 @@ class Settings:
     ollama_url: str = DEFAULTS["ollama_url"]
     archive_interval_days: int = DEFAULTS["archive_interval_days"]
     llm_thinking: bool = DEFAULTS["llm_thinking"]
+    auto_narrate: bool = DEFAULTS["auto_narrate"]
+    context_level: str = DEFAULTS["context_level"]
 
     @property
     def project_root(self) -> Path:
@@ -73,6 +77,8 @@ class Settings:
             "ollama_url": self.ollama_url,
             "archive_interval_days": self.archive_interval_days,
             "llm_thinking": self.llm_thinking,
+            "auto_narrate": self.auto_narrate,
+            "context_level": self.context_level,
         }
 
 

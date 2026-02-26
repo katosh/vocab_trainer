@@ -127,6 +127,26 @@ class TestSettingsAPI:
         data = resp.json()
         assert data["session_size"] == 30
 
+    def test_preference_fields_in_settings(self, test_app):
+        """Settings API includes auto_narrate and context_level."""
+        client, _, _ = test_app
+        resp = client.get("/api/settings")
+        data = resp.json()
+        assert data["auto_narrate"] is True
+        assert data["context_level"] == "simple"
+
+    def test_update_preference_fields(self, test_app):
+        """PUT /api/settings updates preference fields."""
+        client, _, _ = test_app
+        resp = client.put("/api/settings", json={
+            "auto_narrate": False,
+            "context_level": "advanced",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["auto_narrate"] is False
+        assert data["context_level"] == "advanced"
+
 
 class TestSessionAPI:
     def test_start_session_no_data(self, test_app):
@@ -214,6 +234,69 @@ class TestSessionAPI:
         client, _, _ = test_app
         resp = client.post("/api/session/finish", json={"session_id": 9999})
         assert resp.status_code == 404
+
+    def test_session_active_no_session(self, test_app):
+        """GET /api/session/active returns inactive when no sessions."""
+        client, _, _ = test_app
+        resp = client.get("/api/session/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] is False
+
+    def test_session_active_with_unanswered_question(self, test_app_with_data):
+        """GET /api/session/active returns current question when unanswered."""
+        client, db, settings = test_app_with_data
+        session_id = db.start_session()
+        current_q = {
+            "session_id": session_id,
+            "stem": "Her ___ reply left no room.",
+            "choices": ["terse", "concise", "pithy", "laconic"],
+            "correct_index": 0,
+            "correct_word": "terse",
+        }
+        app_module._active_sessions[session_id] = {
+            "questions": [{"id": "q1", "target_word": "terse"}],
+            "current_index": 0,
+            "total": 0,
+            "correct": 0,
+            "target": 1,
+            "seen_ids": {"q1"},
+            "seen_pairs": {("terse", "being brief")},
+            "current_question": current_q,
+            "question_answered": False,
+        }
+
+        resp = client.get("/api/session/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] is True
+        assert data["session_id"] == session_id
+        assert data["question_answered"] is False
+        assert "current_question" in data
+        assert data["current_question"]["stem"] == "Her ___ reply left no room."
+
+    def test_session_active_after_answer(self, test_app_with_data):
+        """GET /api/session/active omits question after answer."""
+        client, db, settings = test_app_with_data
+        session_id = db.start_session()
+        app_module._active_sessions[session_id] = {
+            "questions": [{"id": "q1", "target_word": "terse"}],
+            "current_index": 1,
+            "total": 1,
+            "correct": 1,
+            "target": 1,
+            "seen_ids": {"q1"},
+            "seen_pairs": {("terse", "being brief")},
+            "current_question": {"stem": "old"},
+            "question_answered": True,
+        }
+
+        resp = client.get("/api/session/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] is True
+        assert data["question_answered"] is True
+        assert "current_question" not in data
 
 
 class TestAudioAPI:

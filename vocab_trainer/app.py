@@ -477,6 +477,7 @@ async def api_session_start():
         "target": s.session_size,
         "seen_ids": {q["id"] for q in questions_data},
         "seen_pairs": seen_pairs,
+        "question_answered": False,
     }
 
     # Top up the DB question bank in the background
@@ -502,6 +503,7 @@ async def api_session_answer(request: Request):
         raise HTTPException(400, "No current question")
 
     correct = selected_index == current_q["correct_index"]
+    session["question_answered"] = True
     session["total"] += 1
     if correct:
         session["correct"] += 1
@@ -695,6 +697,7 @@ async def _get_next_question(session_id: int) -> dict:
 
     # Store for answer checking
     session["current_question"] = question
+    session["question_answered"] = False
 
     # Pre-generate TTS in background so audio is ready when the user answers
     _pregenerate_audio(q_data.get("explanation", ""), q_data.get("context_sentence", ""))
@@ -803,6 +806,28 @@ async def api_session_summary():
     db = get_db()
     history = db.get_session_history(limit=10)
     return {"sessions": history}
+
+
+@app.get("/api/session/active")
+async def api_session_active():
+    """Return the active session state for cross-device resumption."""
+    if not _active_sessions:
+        return {"active": False}
+
+    session_id = next(iter(_active_sessions))
+    session = _active_sessions[session_id]
+    result = {
+        "active": True,
+        "session_id": session_id,
+        "progress": _session_progress(session),
+        "question_answered": session.get("question_answered", False),
+    }
+
+    # Include the current question only if it hasn't been answered yet
+    if not session.get("question_answered", False) and session.get("current_question"):
+        result["current_question"] = session["current_question"]
+
+    return result
 
 
 # ── API: Word-progress archive ─────────────────────────────────────────

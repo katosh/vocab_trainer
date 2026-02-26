@@ -23,7 +23,7 @@ class TestSettings:
         assert d["elevenlabs_model"] == "eleven_flash_v2_5"
         assert "elevenlabs_voice_id" not in d
         assert isinstance(d["vocab_files"], list)
-        assert len(d) == 12  # all fields present
+        assert len(d) == 14  # all fields present
 
     def test_to_dict_roundtrip(self):
         s = Settings(llm_provider="anthropic", session_size=30)
@@ -31,6 +31,18 @@ class TestSettings:
         s2 = Settings(**d)
         assert s2.llm_provider == "anthropic"
         assert s2.session_size == 30
+
+    def test_preference_defaults(self):
+        s = Settings()
+        assert s.auto_narrate is True
+        assert s.context_level == "simple"
+
+    def test_preference_roundtrip(self):
+        s = Settings(auto_narrate=False, context_level="advanced")
+        d = s.to_dict()
+        s2 = Settings(**d)
+        assert s2.auto_narrate is False
+        assert s2.context_level == "advanced"
 
     def test_custom_values(self):
         s = Settings(llm_provider="anthropic", llm_model="claude-3", session_size=50)
