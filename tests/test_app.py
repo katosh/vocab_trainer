@@ -340,9 +340,12 @@ class TestFullSessionFlow:
             "current_index": 0,
             "total": 0,
             "correct": 0,
+            "review_count": 0,
+            "new_count": 0,
             "target": 1,
             "seen_ids": {"test-q-001"},
             "seen_pairs": {("terse", "being brief")},
+            "question_answered": False,
             "current_question": {
                 **q_data,
                 "choices": ["terse", "concise", "pithy", "laconic"],

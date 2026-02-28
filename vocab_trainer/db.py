@@ -657,7 +657,7 @@ class Database:
         ).fetchone()
 
         sessions = self.conn.execute(
-            "SELECT COUNT(*) as cnt FROM sessions"
+            "SELECT COUNT(*) as cnt FROM sessions WHERE ended_at IS NOT NULL"
         ).fetchone()
 
         total_answered = review_stats["total"]

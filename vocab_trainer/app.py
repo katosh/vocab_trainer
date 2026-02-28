@@ -472,8 +472,8 @@ async def api_session_start():
         "current_index": 0,
         "total": 0,
         "correct": 0,
-        "review_count": review_count,
-        "new_count": new_count,
+        "review_count": 0,
+        "new_count": 0,
         "target": s.session_size,
         "seen_ids": {q["id"] for q in questions_data},
         "seen_pairs": seen_pairs,
@@ -507,6 +507,10 @@ async def api_session_answer(request: Request):
     session["total"] += 1
     if correct:
         session["correct"] += 1
+    if current_q.get("priority") == 0:
+        session["review_count"] += 1
+    else:
+        session["new_count"] += 1
 
     db = get_db()
     s = get_settings()
@@ -692,6 +696,7 @@ async def _get_next_question(session_id: int) -> dict:
         "context_sentence": q_data.get("context_sentence", ""),
         "cluster_title": cluster_title,
         "id": q_data.get("id", ""),
+        "priority": q_data.get("priority", 1),
         "progress": _session_progress(session),
     }
 
