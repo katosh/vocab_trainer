@@ -206,6 +206,15 @@ const narrationToggle = {
         btn.title = 'Pause narration';
         btn.classList.remove('hidden');
         btn.onclick = () => this.toggle();
+        // Route headphone/media-key controls through the same toggle path
+        if ('mediaSession' in navigator) {
+            navigator.mediaSession.setActionHandler('pause', () => {
+                if (!this._paused) this.toggle();
+            });
+            navigator.mediaSession.setActionHandler('play', () => {
+                if (this._paused) this.toggle();
+            });
+        }
     },
 
     toggle() {
@@ -224,6 +233,17 @@ const narrationToggle = {
         }
     },
 
+    // Sync UI when audio is paused/resumed externally (headphones, media controls)
+    syncPaused(paused) {
+        if (this._paused === paused) return;
+        this._paused = paused;
+        const btn = this._get();
+        if (btn) {
+            btn.innerHTML = paused ? ICONS.play : ICONS.pause;
+            btn.title = paused ? 'Resume narration' : 'Pause narration';
+        }
+    },
+
     hide() {
         const btn = this._get();
         btn.classList.add('hidden');
@@ -232,6 +252,10 @@ const narrationToggle = {
         this._pauseFn = null;
         this._resumeFn = null;
         this._cleanupFn = null;
+        if ('mediaSession' in navigator) {
+            navigator.mediaSession.setActionHandler('pause', null);
+            navigator.mediaSession.setActionHandler('play', null);
+        }
     },
 };
 
