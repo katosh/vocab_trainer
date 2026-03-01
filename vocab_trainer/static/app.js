@@ -1155,6 +1155,7 @@ class NarrationQueue {
     feedToken(token) {
         if (this.stopped) return;
         this.buffer += token;
+        this.buffer = this.buffer.replace(/_{3,}/g, 'blank');
         this._extractSentences();
     }
 
