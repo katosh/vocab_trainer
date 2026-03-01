@@ -11,6 +11,7 @@ from vocab_trainer.question_generator import (
     _fix_article_before_blank,
     _pick_question_type,
     _pick_word_cluster,
+    _validate_grammar,
     _validate_question,
     generate_question,
 )
@@ -267,6 +268,16 @@ class TestPickWordCluster:
         )
 
 
+def _make_grammar_ok_response():
+    """Build a grammar-check response that passes."""
+    return json.dumps({"grammar_ok": True, "grammar_issue": None})
+
+
+def _make_grammar_fail_response(issue="bad grammar"):
+    """Build a grammar-check response that fails."""
+    return json.dumps({"grammar_ok": False, "grammar_issue": issue})
+
+
 def _make_enrichment_response(choices, cluster_words_map=None):
     """Build a valid enrichment JSON response for the given choices."""
     details = []
@@ -303,9 +314,10 @@ class TestGenerateQuestion:
             "explanation": "Terse implies rudeness.",
             "context_sentence": "Her terse reply surprised everyone.",
         })
-        step2 = _make_enrichment_response(choices)
+        step2_grammar = _make_grammar_ok_response()
+        step3 = _make_enrichment_response(choices)
 
-        llm = FakeLLM(responses=[step1, step2])
+        llm = FakeLLM(responses=[step1, step2_grammar, step3])
 
         cluster = populated_db.get_random_cluster()
         cw = populated_db.get_cluster_words(cluster["id"])
@@ -323,8 +335,8 @@ class TestGenerateQuestion:
         assert q.question_type == "fill_blank"
         assert q.llm_provider == "fake-llm"
         assert len(q.choices) == 4
-        # Step 1 + Step 2 enrichment
-        assert llm.call_count == 2
+        # Step 1 + Step 2 grammar + Step 3 enrichment
+        assert llm.call_count == 3
 
     @pytest.mark.asyncio
     async def test_choice_details_populated(self, populated_db):
@@ -340,9 +352,10 @@ class TestGenerateQuestion:
         cluster = populated_db.get_random_cluster()
         cw = populated_db.get_cluster_words(cluster["id"])
         cw_map = {w["word"].lower(): w for w in cw}
-        step2 = _make_enrichment_response(choices, cw_map)
+        step2_grammar = _make_grammar_ok_response()
+        step3 = _make_enrichment_response(choices, cw_map)
 
-        llm = FakeLLM(responses=[step1, step2])
+        llm = FakeLLM(responses=[step1, step2_grammar, step3])
         target = next(w for w in cw if w["word"] == "terse")
 
         q = await generate_question(
@@ -380,9 +393,10 @@ class TestGenerateQuestion:
         cluster = populated_db.get_random_cluster()
         cw = populated_db.get_cluster_words(cluster["id"])
         cw_map = {w["word"].lower(): w for w in cw}
-        step2 = _make_enrichment_response(choices, cw_map)
+        step2_grammar = _make_grammar_ok_response()
+        step3 = _make_enrichment_response(choices, cw_map)
 
-        llm = FakeLLM(responses=[step1, step2])
+        llm = FakeLLM(responses=[step1, step2_grammar, step3])
         target = next(w for w in cw if w["word"] == "terse")
 
         q = await generate_question(
@@ -412,9 +426,10 @@ class TestGenerateQuestion:
             "explanation": "Terse implies rudeness.",
             "context_sentence": "Her terse reply surprised everyone.",
         })
-        # Only provide step 1 response — enrichment will get same JSON
-        # which lacks choice_details, causing fallback after 2 retries
-        llm = FakeLLM(responses=[step1])
+        step2_grammar = _make_grammar_ok_response()
+        # After grammar OK, enrichment will get step1 JSON (lacks choice_details),
+        # causing fallback after 3 retries
+        llm = FakeLLM(responses=[step1, step2_grammar, step1])
 
         cluster = populated_db.get_random_cluster()
         cw = populated_db.get_cluster_words(cluster["id"])
@@ -439,8 +454,8 @@ class TestGenerateQuestion:
         # But why will be empty (no LLM enrichment)
         for detail in q.choice_details:
             assert detail["why"] == ""
-        # 1 step1 + 3 enrichment retries = 4 calls
-        assert llm.call_count == 4
+        # 1 step1 + 1 grammar + 3 enrichment retries = 5 calls
+        assert llm.call_count == 5
 
     @pytest.mark.asyncio
     async def test_invalid_llm_response_retries(self, populated_db):
@@ -451,6 +466,7 @@ class TestGenerateQuestion:
             "explanation": "Concise means compressed.",
             "context_sentence": "A concise report wastes no words.",
         })
+        grammar_ok = _make_grammar_ok_response()
         enrichment = _make_enrichment_response(
             ["concise", "terse", "pithy", "laconic"],
         )
@@ -458,6 +474,7 @@ class TestGenerateQuestion:
             "Not valid JSON",
             "Still not valid",
             valid_step1,
+            grammar_ok,
             enrichment,
         ])
 
@@ -473,8 +490,8 @@ class TestGenerateQuestion:
 
         assert q is not None
         assert q.correct_word == "concise"
-        # 2 failed step1 + 1 successful step1 + 1 enrichment = 4
-        assert llm.call_count == 4
+        # 2 failed step1 + 1 successful step1 + 1 grammar + 1 enrichment = 5
+        assert llm.call_count == 5
 
     @pytest.mark.asyncio
     async def test_all_retries_fail(self, populated_db):
@@ -491,6 +508,38 @@ class TestGenerateQuestion:
         )
 
         assert q is None
+
+    @pytest.mark.asyncio
+    async def test_grammar_failure_skips_enrichment(self, populated_db):
+        """When grammar check fails, question is returned with quality_issue and no enrichment."""
+        choices = ["terse", "concise", "pithy", "laconic"]
+        step1 = json.dumps({
+            "stem": "Her ___ reply surprised everyone.",
+            "choices": choices,
+            "correct_index": 0,
+            "explanation": "Terse implies rudeness.",
+            "context_sentence": "Her terse reply surprised everyone.",
+        })
+        grammar_fail = _make_grammar_fail_response("wrong word form required")
+
+        llm = FakeLLM(responses=[step1, grammar_fail])
+
+        cluster = populated_db.get_random_cluster()
+        cw = populated_db.get_cluster_words(cluster["id"])
+        target = next(w for w in cw if w["word"] == "terse")
+
+        q = await generate_question(
+            llm, populated_db,
+            cluster=cluster,
+            target_word_info=target,
+            question_type="fill_blank",
+        )
+
+        assert q is not None
+        assert q.quality_issue == "wrong word form required"
+        assert q.choice_details == []
+        # Step 1 + grammar check only — no enrichment
+        assert llm.call_count == 2
 
     @pytest.mark.asyncio
     async def test_no_clusters_returns_none(self, tmp_db):

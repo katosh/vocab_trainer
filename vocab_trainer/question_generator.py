@@ -16,6 +16,7 @@ from vocab_trainer.prompts import (
     CHOICE_ENRICHMENT_PROMPT,
     DISTINCTION_PROMPT,
     FILL_BLANK_PROMPT,
+    GRAMMAR_CHECK_PROMPT,
     format_cluster_info,
     format_enrichment,
 )
@@ -280,6 +281,51 @@ def _validate_question(data: dict, target_word: str, question_type: str = "fill_
     return None
 
 
+GRAMMAR_CHECK_RETRIES = 2
+
+
+async def _validate_grammar(
+    llm: LLMProvider,
+    question_type: str,
+    data: dict,
+) -> str | None:
+    """Dedicated grammar validation via a focused LLM call.
+
+    Returns a description of the grammar issue if bad, None if OK.
+    On total failure (no valid JSON after retries), returns None so
+    generation is not blocked by validation failures.
+    """
+    prompt = GRAMMAR_CHECK_PROMPT.format(
+        question_type=question_type,
+        stem=data["stem"],
+        correct_word=data["choices"][data["correct_index"]],
+        choices_formatted=", ".join(data["choices"]),
+    )
+
+    for attempt in range(GRAMMAR_CHECK_RETRIES):
+        try:
+            _log.info("  Grammar check (attempt %d/%d)", attempt + 1, GRAMMAR_CHECK_RETRIES)
+            response = await llm.generate(prompt, temperature=0.2)
+            parsed = _extract_json(response)
+            if parsed is None:
+                _log.info("  Grammar check: no valid JSON")
+                continue
+
+            if parsed.get("grammar_ok") is False:
+                issue = parsed.get("grammar_issue") or "grammar check failed"
+                _log.warning("  Grammar check: FAIL — %s", issue)
+                return issue
+
+            _log.info("  Grammar check: PASS")
+            return None
+        except Exception as e:
+            _log.info("  Grammar check: error — %s", e)
+
+    # Total failure — don't block generation
+    _log.info("  Grammar check: could not validate, allowing through")
+    return None
+
+
 ENRICHMENT_RETRIES = 3
 
 
@@ -308,13 +354,12 @@ async def _enrich_choices(
     cluster: dict,
     cluster_words: list[dict],
     data: dict,
-) -> tuple[list[dict], str | None]:
-    """Step 2: enrich choices via a second LLM call.
+) -> list[dict]:
+    """Enrich choices via a second LLM call.
 
-    Returns (choice_details, quality_issue) where quality_issue is a grammar
-    problem description if the LLM flagged the question, or None if OK.
-    On validation errors, feeds the specific error back to the LLM so it can
-    correct its response.  Falls back to stem-based lookup on total failure.
+    Returns choice_details list. On validation errors, feeds the specific
+    error back to the LLM so it can correct its response.  Falls back to
+    stem-based lookup on total failure.
     """
     base_prompt = CHOICE_ENRICHMENT_PROMPT.format(
         cluster_title=cluster["title"],
@@ -344,14 +389,8 @@ async def _enrich_choices(
                 _log.info("  Enrich: validation failed — feeding back: %s", error.split('\n')[0])
                 continue
 
-            # Extract grammar verdict (optional — backward compat)
-            quality_issue = None
-            if parsed.get("grammar_ok") is False:
-                quality_issue = parsed.get("grammar_issue") or "grammar check failed"
-                _log.warning("  Enrich: grammar issue flagged — %s", quality_issue)
-            else:
-                _log.info("  Enrich: OK")
-            return details, quality_issue
+            _log.info("  Enrich: OK")
+            return details
         except Exception as e:
             _log.info("  Enrich: error — %s", e)
 
@@ -369,7 +408,7 @@ async def _enrich_choices(
             "distinction": info.get("distinction", ""),
             "why": "",
         })
-    return fallback, None
+    return fallback
 
 
 async def generate_question(
@@ -438,15 +477,32 @@ async def generate_question(
 
             _log.info("  Step 1 OK — question generated")
 
-            # Step 2: enrich choices via second LLM call (falls back to
-            # stem-based lookup if the enrichment call fails)
-            choice_details, quality_issue = await _enrich_choices(
-                llm, cluster, cluster_words, data,
-            )
+            # Step 2: Grammar validation (dedicated adversarial LLM call)
+            quality_issue = await _validate_grammar(llm, question_type, data)
 
             if quality_issue:
                 _log.warning("  Grammar issue for '%s' (%s): %s",
                              target_word_info["word"], cluster["title"], quality_issue)
+                # Skip enrichment — no point enriching a flagged question
+                return Question(
+                    id=str(uuid.uuid4()),
+                    question_type=question_type,
+                    stem=data["stem"],
+                    choices=data["choices"],
+                    correct_index=data["correct_index"],
+                    correct_word=target_word_info["word"],
+                    explanation=data["explanation"],
+                    context_sentence=data["context_sentence"],
+                    cluster_title=cluster["title"],
+                    llm_provider=llm.name(),
+                    choice_details=[],
+                    quality_issue=quality_issue,
+                )
+
+            # Step 3: Enrich choices (only reached for grammar-OK questions)
+            choice_details = await _enrich_choices(
+                llm, cluster, cluster_words, data,
+            )
 
             _log.info("  Saved (%s)", cluster["title"])
             return Question(
@@ -461,7 +517,7 @@ async def generate_question(
                 cluster_title=cluster["title"],
                 llm_provider=llm.name(),
                 choice_details=choice_details,
-                quality_issue=quality_issue,
+                quality_issue=None,
             )
         except Exception as e:
             if attempt == MAX_RETRIES - 1:

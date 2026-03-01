@@ -160,30 +160,59 @@ Dr. Voss's item:
 ```json
 """
 
+# ── Grammar check (dedicated adversarial step) ─────────────────
+
+GRAMMAR_CHECK_PROMPT = """\
+You are a strict grammar auditor. Your ONLY job is to decide whether the \
+completed sentence is grammatically correct English.
+
+Question type: {question_type}
+Stem: {stem}
+Correct answer: {correct_word}
+Choices: {choices_formatted}
+
+For fill_blank: mentally replace the blank (___) with the correct answer. \
+For best_fit/distinction: re-read the stem as-is together with the correct answer.
+
+Check for: wrong word form (gerund vs infinitive, noun vs verb), broken \
+subject-verb agreement, missing articles, awkward syntax no native speaker \
+would write, or any other grammatical error.
+
+Example 1 — PASS:
+Stem: "The nun's ___ smile suggested a soul at peace with the divine."
+Correct answer: beatific
+```json
+{{"grammar_ok": true, "grammar_issue": null}}
+```
+
+Example 2 — FAIL:
+Stem: "After months of ___ to their demands, the board finally acted."
+Correct answer: capitulate
+```json
+{{"grammar_ok": false, "grammar_issue": "'of' requires a gerund ('capitulating') or noun ('capitulation'), not the bare infinitive 'capitulate'."}}
+```
+
+Respond with ONLY a JSON object:
+```json
+"""
+
 # ── Choice enrichment ────────────────────────────────────────────
 
 CHOICE_ENRICHMENT_PROMPT = """\
-After writing each question, Dr. Voss first verifies grammar, then annotates \
-every choice with its meaning, its distinction from the cluster, and a \
-sentence-specific note on why it does or doesn't fit this particular stem.
-
-Before annotating, verify grammar: mentally replace the blank (or re-read the \
-stem for best_fit/distinction) with the correct answer. If the resulting \
-sentence is ungrammatical (wrong word form, broken agreement, awkward syntax \
-that no native speaker would write), set "grammar_ok" to false and describe \
-the problem in "grammar_issue". Otherwise set "grammar_ok" to true and \
-"grammar_issue" to null.
+After writing each question, Dr. Voss annotates every choice with its \
+meaning, its distinction from the cluster, and a sentence-specific note on \
+why it does or doesn't fit this particular stem.
 
 Example 1 — for the stem "The nun's ___ smile suggested a soul at peace with \
 the divine" with choices [beatific, blissful, elated, jubilant]:
 ```json
-{{"grammar_ok": true, "grammar_issue": null, "choice_details": [{{"word": "beatific", "base_word": "beatific", "meaning": "radiating bliss, saintly", "distinction": "specifically religious; serene, transcendent joy", "why": "Fits: the religious context ('divine') and serene outward radiance are precisely what beatific conveys."}}, {{"word": "blissful", "base_word": "blissful", "meaning": "supremely happy", "distinction": "secular; pairs with unawareness or sustained states", "why": "Doesn't fit: blissful lacks the religious register demanded by 'the divine' and 'soul.'"}}, {{"word": "elated", "base_word": "elated", "meaning": "feeling great happiness", "distinction": "active, momentary, tied to a specific occasion", "why": "Doesn't fit: elated implies a momentary high from an event, not the sustained serenity described."}}, {{"word": "jubilant", "base_word": "jubilant", "meaning": "feeling triumphant joy", "distinction": "public, celebratory, after a victory", "why": "Doesn't fit: jubilant implies public celebration of a triumph, entirely wrong for quiet garden contemplation."}}]}}
+{{"choice_details": [{{"word": "beatific", "base_word": "beatific", "meaning": "radiating bliss, saintly", "distinction": "specifically religious; serene, transcendent joy", "why": "Fits: the religious context ('divine') and serene outward radiance are precisely what beatific conveys."}}, {{"word": "blissful", "base_word": "blissful", "meaning": "supremely happy", "distinction": "secular; pairs with unawareness or sustained states", "why": "Doesn't fit: blissful lacks the religious register demanded by 'the divine' and 'soul.'"}}, {{"word": "elated", "base_word": "elated", "meaning": "feeling great happiness", "distinction": "active, momentary, tied to a specific occasion", "why": "Doesn't fit: elated implies a momentary high from an event, not the sustained serenity described."}}, {{"word": "jubilant", "base_word": "jubilant", "meaning": "feeling triumphant joy", "distinction": "public, celebratory, after a victory", "why": "Doesn't fit: jubilant implies public celebration of a triumph, entirely wrong for quiet garden contemplation."}}]}}
 ```
 
 Example 2 — for the stem "He loves to ___ through the morning market, pausing \
 at every stall with a knowing grin" with choices [saunter, trudge, stride, amble]:
 ```json
-{{"grammar_ok": true, "grammar_issue": null, "choice_details": [{{"word": "saunter", "base_word": "saunter", "meaning": "walk in a slow, relaxed manner", "distinction": "confident, unhurried; a hint of swagger", "why": "Fits: 'knowing grin' and 'unhurried confidence' demand a walk that combines leisure with self-assurance."}}, {{"word": "trudge", "base_word": "trudge", "meaning": "walk slowly with heavy steps", "distinction": "weariness or reluctance; each step an effort", "why": "Doesn't fit: trudge implies exhaustion or reluctance, contradicting the confident, joyful tone of the scene."}}, {{"word": "stride", "base_word": "stride", "meaning": "walk with long, decisive steps", "distinction": "purpose and determination; covering ground", "why": "Doesn't fit: stride implies urgent purposefulness, contradicting 'pausing at every stall' and the unhurried mood."}}, {{"word": "amble", "base_word": "amble", "meaning": "walk at a slow, easy pace", "distinction": "gentle aimlessness; no destination in mind", "why": "Doesn't fit: amble captures the slow pace but misses the confidence — 'knowing grin' and 'owns the afternoon' imply swagger, not aimlessness."}}]}}
+{{"choice_details": [{{"word": "saunter", "base_word": "saunter", "meaning": "walk in a slow, relaxed manner", "distinction": "confident, unhurried; a hint of swagger", "why": "Fits: 'knowing grin' and 'unhurried confidence' demand a walk that combines leisure with self-assurance."}}, {{"word": "trudge", "base_word": "trudge", "meaning": "walk slowly with heavy steps", "distinction": "weariness or reluctance; each step an effort", "why": "Doesn't fit: trudge implies exhaustion or reluctance, contradicting the confident, joyful tone of the scene."}}, {{"word": "stride", "base_word": "stride", "meaning": "walk with long, decisive steps", "distinction": "purpose and determination; covering ground", "why": "Doesn't fit: stride implies urgent purposefulness, contradicting 'pausing at every stall' and the unhurried mood."}}, {{"word": "amble", "base_word": "amble", "meaning": "walk at a slow, easy pace", "distinction": "gentle aimlessness; no destination in mind", "why": "Doesn't fit: amble captures the slow pace but misses the confidence — 'knowing grin' and 'owns the afternoon' imply swagger, not aimlessness."}}]}}
 ```
 
 Now Dr. Voss annotates her latest question.
