@@ -75,6 +75,7 @@ let autoNarrateEnabled = true;
 let thinkingEnabled = false;
 let narrationQueue = null;
 let lastNarrableText = null;
+let audioGeneration = 0;  // incremented on navigation; guards stale async callbacks
 let sessionEventSource = null;
 let waitingForQuestion = false;
 
@@ -189,14 +190,27 @@ function bufferAudio(audio, onReady, onError) {
     audio.load();
 }
 
+/** Cancel all pending/playing audio elements (shared by stopAllAudio + NarrationQueue). */
+function _clearActiveAudio() {
+    if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
+    activeAudioElements.forEach(a => {
+        a.oncanplaythrough = null;  // prevent stale bufferAudio callbacks
+        a.pause();
+        a.currentTime = 0;
+    });
+    activeAudioElements = [];
+    const tts = document.getElementById('tts-audio');
+    if (tts) {
+        tts.oncanplaythrough = null;
+        tts.pause();
+        tts.currentTime = 0;
+        tts.onended = null;
+    }
+}
+
 function stopAllAudio() {
     if (narrationQueue) { narrationQueue.stop(); narrationQueue = null; }
-    if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
-    activeAudioElements.forEach(a => { a.pause(); a.currentTime = 0; });
-    activeAudioElements = [];
-    // Also stop the built-in TTS player
-    const tts = document.getElementById('tts-audio');
-    if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
+    _clearActiveAudio();
     // Transition to idle (replay available) or hidden
     if (lastNarrableText) {
         narrationToggle._setState('idle');
@@ -516,6 +530,7 @@ function updateProgress(p) {
 function showQuestion(data) {
     stopAllAudio();
     lastNarrableText = null;
+    audioGeneration++;
 
     if (data.session_complete) {
         showSummary(data.summary || { total: 0, correct: 0, accuracy: 0 });
@@ -717,6 +732,7 @@ async function submitAnswer(selectedIndex, questionData) {
 
         // Audio: narrate the completed sentence only
         stopAllAudio();
+        const gen = audioGeneration;
         const audio = document.getElementById('tts-audio');
         if (result.context_audio_hash) {
             // Audio was pre-generated — wait for buffer before playing (Safari fix)
@@ -734,6 +750,7 @@ async function submitAnswer(selectedIndex, questionData) {
             api('/api/tts/generate', 'POST', { text: result.context_sentence })
                 .then(ttsResult => {
                     if (audioStatus) audioStatus.classList.add('hidden');
+                    if (gen !== audioGeneration) return;  // user navigated away
                     if (ttsResult.audio_hash) {
                         audio.src = `/api/audio/${ttsResult.audio_hash}.mp3`;
                         audio.hidden = false;
@@ -1245,11 +1262,7 @@ class NarrationQueue {
             this.started = true;
             // Stop previous narration and other audio, but not this queue
             if (this.previousQueue) { this.previousQueue.stop(); this.previousQueue = null; }
-            if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
-            activeAudioElements.forEach(a => { a.pause(); a.currentTime = 0; });
-            activeAudioElements = [];
-            const tts = document.getElementById('tts-audio');
-            if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
+            _clearActiveAudio();
         }
         narrationToggle.syncPlaying();
         this.playing = true;
