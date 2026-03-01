@@ -163,10 +163,12 @@
                             <button class="scroll-to-bottom-btn hidden" id="scroll-to-bottom" title="Scroll to bottom">&#x2193;</button>
                         </div>
                         <div class="chat-input-row">
-                            <input type="text" id="chat-input" placeholder="Ask about these words..." autocomplete="off" data-1p-ignore>
-                            <button id="chat-narration-restart" class="chat-narration-toggle hidden" title="Restart narration"></button>
-                            <button id="chat-narration-toggle" class="chat-narration-toggle hidden" title="Pause / resume narration"></button>
-                            <button id="chat-send" class="chat-send-btn">Send</button>
+                            <textarea id="chat-input" rows="1" placeholder="Ask about these words..." autocomplete="off" data-1p-ignore></textarea>
+                            <div class="chat-input-actions">
+                                <button id="chat-narration-restart" class="chat-narration-toggle hidden" title="Restart narration"></button>
+                                <button id="chat-narration-toggle" class="chat-narration-toggle hidden" title="Pause / resume narration"></button>
+                                <button id="chat-send" class="chat-send-btn">Send</button>
+                            </div>
                         </div>
                     </div>
 

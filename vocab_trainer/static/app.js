@@ -1074,8 +1074,15 @@ document.getElementById('chat-send').addEventListener('click', () => {
     const msg = input.value.trim();
     if (msg && !chatStreaming && currentQuestionContext) {
         input.value = '';
+        input.style.height = '';
         sendChatMessage(msg);
     }
+});
+
+// Auto-resize textarea (JS fallback for browsers without field-sizing: content)
+document.getElementById('chat-input').addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = this.scrollHeight + 'px';
 });
 
 document.getElementById('chat-input').addEventListener('keydown', (e) => {
