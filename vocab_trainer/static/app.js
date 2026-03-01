@@ -28,7 +28,8 @@
 const ICONS = {
     pause: '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>',
     play:  '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="6,3 20,12 6,21"/></svg>',
-    stop:  '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
+    stop:    '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
+    restart: '<svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>',
 };
 
 // ── iOS Audio Unlock ──────────────────────────────────────────────────────
@@ -190,15 +191,18 @@ function bufferAudio(audio, onReady, onError) {
     audio.load();
 }
 
-/** Cancel all pending/playing audio elements (shared by stopAllAudio + NarrationQueue). */
-function _clearActiveAudio() {
+/** Cancel all pending/playing audio elements (shared by stopAllAudio + NarrationQueue).
+ *  @param {Set} [keep] - audio elements to spare (e.g. current queue's own elements) */
+function _clearActiveAudio(keep) {
     if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
+    const kept = [];
     activeAudioElements.forEach(a => {
+        if (keep && keep.has(a)) { kept.push(a); return; }
         a.oncanplaythrough = null;  // prevent stale bufferAudio callbacks
         a.pause();
         a.currentTime = 0;
     });
-    activeAudioElements = [];
+    activeAudioElements = kept;
     const tts = document.getElementById('tts-audio');
     if (tts) {
         tts.oncanplaythrough = null;
@@ -223,16 +227,30 @@ function stopAllAudio() {
 // 4-state machine: hidden → idle → playing ↔ paused → idle (on done)
 const narrationToggle = {
     _btn: null,
+    _restartBtn: null,
     _state: 'hidden',  // 'hidden' | 'idle' | 'playing' | 'paused'
     _queue: null,       // current NarrationQueue when playing/paused
 
     _get() { return this._btn || (this._btn = document.getElementById('chat-narration-toggle')); },
+    _getRestart() { return this._restartBtn || (this._restartBtn = document.getElementById('chat-narration-restart')); },
 
     _setState(state) {
         this._state = state;
         const btn = this._get();
+        const restart = this._getRestart();
         if (!btn) return;
-        btn.classList.remove('is-playing');
+        btn.classList.remove('is-playing', 'is-buffering');
+        // Restart button visible when playing or paused (i.e. there's something to restart)
+        const showRestart = state === 'playing' || state === 'paused';
+        if (restart) {
+            restart.classList.toggle('hidden', !showRestart);
+            if (showRestart) {
+                restart.innerHTML = ICONS.restart;
+                restart.onclick = () => this._onRestart();
+            } else {
+                restart.onclick = null;
+            }
+        }
         switch (state) {
             case 'hidden':
                 btn.classList.add('hidden');
@@ -276,6 +294,9 @@ const narrationToggle = {
     attachQueue(queue) {
         this._queue = queue;
         this._setState('playing');
+        // Show buffering indicator until first sentence actually plays
+        const btn = this._get();
+        if (btn) btn.classList.add('is-buffering');
         this._setupMediaSession();
     },
 
@@ -286,8 +307,10 @@ const narrationToggle = {
         this._clearMediaSession();
     },
 
-    /** Sync to playing state (called from _tryPlay on first sentence) */
+    /** Sync to playing state (called from _tryPlay when audio actually starts) */
     syncPlaying() {
+        const btn = this._get();
+        if (btn) btn.classList.remove('is-buffering');
         if (this._state !== 'playing') this._setState('playing');
     },
 
@@ -303,10 +326,16 @@ const narrationToggle = {
         const q = new NarrationQueue(narrationQueue);
         narrationQueue = q;
         q.onDone = () => this.onQueueDone();
-        // Feed the stored text as complete sentences
         q.feedToken(lastNarrableText);
         q.flush();
         this.attachQueue(q);
+    },
+
+    _onRestart() {
+        if (!lastNarrableText) return;
+        // Stop current queue and start fresh from the top
+        if (this._queue) { this._queue.stop(); this._queue = null; }
+        this._onClickIdle();
     },
 
     _setupMediaSession() {
@@ -1262,7 +1291,8 @@ class NarrationQueue {
             this.started = true;
             // Stop previous narration and other audio, but not this queue
             if (this.previousQueue) { this.previousQueue.stop(); this.previousQueue = null; }
-            _clearActiveAudio();
+            const ownAudio = new Set(this.sentences.map(s => s.audio).filter(Boolean));
+            _clearActiveAudio(ownAudio);
         }
         narrationToggle.syncPlaying();
         this.playing = true;

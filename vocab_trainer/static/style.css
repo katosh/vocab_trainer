@@ -1259,6 +1259,15 @@ nav {
     background: var(--accent-subtle);
 }
 
+.chat-narration-toggle.is-buffering {
+    animation: bufferingPulse 1s ease-in-out infinite;
+}
+
+@keyframes bufferingPulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
 
 /* ═══════════════════════════════════════════════════════════════════
    Session Summary
