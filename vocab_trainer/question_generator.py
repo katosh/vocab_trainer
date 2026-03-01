@@ -308,10 +308,11 @@ async def _enrich_choices(
     cluster: dict,
     cluster_words: list[dict],
     data: dict,
-) -> list[dict]:
+) -> tuple[list[dict], str | None]:
     """Step 2: enrich choices via a second LLM call.
 
-    Returns a list of dicts with word, base_word, meaning, distinction, why.
+    Returns (choice_details, quality_issue) where quality_issue is a grammar
+    problem description if the LLM flagged the question, or None if OK.
     On validation errors, feeds the specific error back to the LLM so it can
     correct its response.  Falls back to stem-based lookup on total failure.
     """
@@ -343,8 +344,14 @@ async def _enrich_choices(
                 _log.info("  Enrich: validation failed — feeding back: %s", error.split('\n')[0])
                 continue
 
-            _log.info("  Enrich: OK")
-            return details
+            # Extract grammar verdict (optional — backward compat)
+            quality_issue = None
+            if parsed.get("grammar_ok") is False:
+                quality_issue = parsed.get("grammar_issue") or "grammar check failed"
+                _log.warning("  Enrich: grammar issue flagged — %s", quality_issue)
+            else:
+                _log.info("  Enrich: OK")
+            return details, quality_issue
         except Exception as e:
             _log.info("  Enrich: error — %s", e)
 
@@ -362,7 +369,7 @@ async def _enrich_choices(
             "distinction": info.get("distinction", ""),
             "why": "",
         })
-    return fallback
+    return fallback, None
 
 
 async def generate_question(
@@ -433,9 +440,13 @@ async def generate_question(
 
             # Step 2: enrich choices via second LLM call (falls back to
             # stem-based lookup if the enrichment call fails)
-            choice_details = await _enrich_choices(
+            choice_details, quality_issue = await _enrich_choices(
                 llm, cluster, cluster_words, data,
             )
+
+            if quality_issue:
+                _log.warning("  Grammar issue for '%s' (%s): %s",
+                             target_word_info["word"], cluster["title"], quality_issue)
 
             _log.info("  Saved (%s)", cluster["title"])
             return Question(
@@ -450,6 +461,7 @@ async def generate_question(
                 cluster_title=cluster["title"],
                 llm_provider=llm.name(),
                 choice_details=choice_details,
+                quality_issue=quality_issue,
             )
         except Exception as e:
             if attempt == MAX_RETRIES - 1:

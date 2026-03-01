@@ -59,6 +59,8 @@ Target word: **{target_word}** — {target_meaning} (distinction: {target_distin
 
 Requirements: "{target_word}" must be one of the 4 choices. All choices inflected identically. correct_index points to "{target_word}". The stem must contain exactly one blank (___) — never two or more. The stem must NEVER mention any of the answer choices by name.
 
+CRITICAL GRAMMAR RULE: The completed sentence must be grammatically correct English when the blank is filled with the correct answer. Pay close attention to what the surrounding syntax demands — if the position requires a gerund (-ing), past participle (-ed), noun form (-tion/-ment), or other inflection, either rewrite the sentence so the base form fits naturally, or list all choices in the required inflected form. Example mistake: "After months of ___ to the demands" with answer "capitulate" — WRONG, because "of" demands a gerund ("capitulating") or noun ("capitulation"). Either restructure as "…finally decided to ___" or inflect all choices.
+
 Dr. Voss's item:
 ```json
 """
@@ -106,7 +108,7 @@ Target word: **{target_word}** — {target_meaning} (distinction: {target_distin
 
 {enrichment_section}
 
-Requirements: "{target_word}" must be one of the 4 choices. correct_index points to "{target_word}". The stem must NEVER mention any of the answer choices by name — describe the concept, don't name the words.
+Requirements: "{target_word}" must be one of the 4 choices. correct_index points to "{target_word}". The stem must NEVER mention any of the answer choices by name — describe the concept, don't name the words. The question and all answer choices must be grammatically correct. If the stem or any choice contains a grammatical error, the question is invalid.
 
 Dr. Voss's item:
 ```json
@@ -152,7 +154,7 @@ Target word: **{target_word}** — {target_meaning} (distinction: {target_distin
 
 {enrichment_section}
 
-Requirements: "{target_word}" must be one of the 4 choices. correct_index points to "{target_word}". Vary the question format. The stem must NEVER mention any of the answer choices by name — describe the concept, don't name the words.
+Requirements: "{target_word}" must be one of the 4 choices. correct_index points to "{target_word}". Vary the question format. The stem must NEVER mention any of the answer choices by name — describe the concept, don't name the words. The question and all answer choices must be grammatically correct. If the stem or any choice contains a grammatical error, the question is invalid.
 
 Dr. Voss's item:
 ```json
@@ -161,20 +163,27 @@ Dr. Voss's item:
 # ── Choice enrichment ────────────────────────────────────────────
 
 CHOICE_ENRICHMENT_PROMPT = """\
-After writing each question, Dr. Voss annotates every choice with its meaning, \
-its distinction from the cluster, and a sentence-specific note on why it does \
-or doesn't fit this particular stem.
+After writing each question, Dr. Voss first verifies grammar, then annotates \
+every choice with its meaning, its distinction from the cluster, and a \
+sentence-specific note on why it does or doesn't fit this particular stem.
+
+Before annotating, verify grammar: mentally replace the blank (or re-read the \
+stem for best_fit/distinction) with the correct answer. If the resulting \
+sentence is ungrammatical (wrong word form, broken agreement, awkward syntax \
+that no native speaker would write), set "grammar_ok" to false and describe \
+the problem in "grammar_issue". Otherwise set "grammar_ok" to true and \
+"grammar_issue" to null.
 
 Example 1 — for the stem "The nun's ___ smile suggested a soul at peace with \
 the divine" with choices [beatific, blissful, elated, jubilant]:
 ```json
-{{"choice_details": [{{"word": "beatific", "base_word": "beatific", "meaning": "radiating bliss, saintly", "distinction": "specifically religious; serene, transcendent joy", "why": "Fits: the religious context ('divine') and serene outward radiance are precisely what beatific conveys."}}, {{"word": "blissful", "base_word": "blissful", "meaning": "supremely happy", "distinction": "secular; pairs with unawareness or sustained states", "why": "Doesn't fit: blissful lacks the religious register demanded by 'the divine' and 'soul.'"}}, {{"word": "elated", "base_word": "elated", "meaning": "feeling great happiness", "distinction": "active, momentary, tied to a specific occasion", "why": "Doesn't fit: elated implies a momentary high from an event, not the sustained serenity described."}}, {{"word": "jubilant", "base_word": "jubilant", "meaning": "feeling triumphant joy", "distinction": "public, celebratory, after a victory", "why": "Doesn't fit: jubilant implies public celebration of a triumph, entirely wrong for quiet garden contemplation."}}]}}
+{{"grammar_ok": true, "grammar_issue": null, "choice_details": [{{"word": "beatific", "base_word": "beatific", "meaning": "radiating bliss, saintly", "distinction": "specifically religious; serene, transcendent joy", "why": "Fits: the religious context ('divine') and serene outward radiance are precisely what beatific conveys."}}, {{"word": "blissful", "base_word": "blissful", "meaning": "supremely happy", "distinction": "secular; pairs with unawareness or sustained states", "why": "Doesn't fit: blissful lacks the religious register demanded by 'the divine' and 'soul.'"}}, {{"word": "elated", "base_word": "elated", "meaning": "feeling great happiness", "distinction": "active, momentary, tied to a specific occasion", "why": "Doesn't fit: elated implies a momentary high from an event, not the sustained serenity described."}}, {{"word": "jubilant", "base_word": "jubilant", "meaning": "feeling triumphant joy", "distinction": "public, celebratory, after a victory", "why": "Doesn't fit: jubilant implies public celebration of a triumph, entirely wrong for quiet garden contemplation."}}]}}
 ```
 
 Example 2 — for the stem "He loves to ___ through the morning market, pausing \
 at every stall with a knowing grin" with choices [saunter, trudge, stride, amble]:
 ```json
-{{"choice_details": [{{"word": "saunter", "base_word": "saunter", "meaning": "walk in a slow, relaxed manner", "distinction": "confident, unhurried; a hint of swagger", "why": "Fits: 'knowing grin' and 'unhurried confidence' demand a walk that combines leisure with self-assurance."}}, {{"word": "trudge", "base_word": "trudge", "meaning": "walk slowly with heavy steps", "distinction": "weariness or reluctance; each step an effort", "why": "Doesn't fit: trudge implies exhaustion or reluctance, contradicting the confident, joyful tone of the scene."}}, {{"word": "stride", "base_word": "stride", "meaning": "walk with long, decisive steps", "distinction": "purpose and determination; covering ground", "why": "Doesn't fit: stride implies urgent purposefulness, contradicting 'pausing at every stall' and the unhurried mood."}}, {{"word": "amble", "base_word": "amble", "meaning": "walk at a slow, easy pace", "distinction": "gentle aimlessness; no destination in mind", "why": "Doesn't fit: amble captures the slow pace but misses the confidence — 'knowing grin' and 'owns the afternoon' imply swagger, not aimlessness."}}]}}
+{{"grammar_ok": true, "grammar_issue": null, "choice_details": [{{"word": "saunter", "base_word": "saunter", "meaning": "walk in a slow, relaxed manner", "distinction": "confident, unhurried; a hint of swagger", "why": "Fits: 'knowing grin' and 'unhurried confidence' demand a walk that combines leisure with self-assurance."}}, {{"word": "trudge", "base_word": "trudge", "meaning": "walk slowly with heavy steps", "distinction": "weariness or reluctance; each step an effort", "why": "Doesn't fit: trudge implies exhaustion or reluctance, contradicting the confident, joyful tone of the scene."}}, {{"word": "stride", "base_word": "stride", "meaning": "walk with long, decisive steps", "distinction": "purpose and determination; covering ground", "why": "Doesn't fit: stride implies urgent purposefulness, contradicting 'pausing at every stall' and the unhurried mood."}}, {{"word": "amble", "base_word": "amble", "meaning": "walk at a slow, easy pace", "distinction": "gentle aimlessness; no destination in mind", "why": "Doesn't fit: amble captures the slow pace but misses the confidence — 'knowing grin' and 'owns the afternoon' imply swagger, not aimlessness."}}]}}
 ```
 
 Now Dr. Voss annotates her latest question.

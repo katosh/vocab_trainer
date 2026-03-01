@@ -112,6 +112,11 @@ class Database:
 
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
+        # Add quality_issue column (safe migration for existing DBs)
+        try:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN quality_issue TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self.conn.commit()
 
     def close(self) -> None:
@@ -242,8 +247,8 @@ class Database:
             "INSERT OR REPLACE INTO questions "
             "(id, question_type, target_word, stem, choices_json, correct_index, "
             "explanation, context_sentence, cluster_title, llm_provider, generated_at, "
-            "choice_details_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "choice_details_json, quality_issue) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 q.id,
                 q.question_type,
@@ -257,6 +262,7 @@ class Database:
                 q.llm_provider,
                 datetime.now(timezone.utc).isoformat(),
                 json.dumps(q.choice_details),
+                q.quality_issue,
             ),
         )
         self.conn.commit()
@@ -268,7 +274,7 @@ class Database:
     def get_ready_question_count(self) -> int:
         """Unanswered questions (ready to serve)."""
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM questions WHERE answered_at IS NULL"
+            "SELECT COUNT(*) FROM questions WHERE answered_at IS NULL AND quality_issue IS NULL"
         ).fetchone()
         return row[0]
 
@@ -310,6 +316,7 @@ class Database:
                 ON q.target_word = wp.word
                 AND COALESCE(q.cluster_title, '') = wp.cluster_title
             WHERE q.answered_at IS NULL
+              AND q.quality_issue IS NULL
               AND (wp.archived IS NULL OR wp.archived = 0)
               AND (wp.word IS NULL OR wp.next_review <= ?)
             ORDER BY priority ASC, wp.next_review DESC, RANDOM()
@@ -330,6 +337,7 @@ class Database:
                 ON q.target_word = wp.word
                 AND COALESCE(q.cluster_title, '') = wp.cluster_title
             WHERE q.answered_at IS NULL
+              AND q.quality_issue IS NULL
               AND wp.archived = 0
               AND wp.next_review <= ?
             ORDER BY wp.next_review DESC
@@ -346,6 +354,7 @@ class Database:
                 ON q.target_word = wp.word
                 AND COALESCE(q.cluster_title, '') = wp.cluster_title
             WHERE q.answered_at IS NULL
+              AND q.quality_issue IS NULL
               AND wp.word IS NULL
             ORDER BY RANDOM() LIMIT ?
         """, (limit,)).fetchall()
@@ -497,6 +506,7 @@ class Database:
                 ON q.target_word = wp.word
                 AND COALESCE(q.cluster_title, '') = wp.cluster_title
                 AND q.answered_at IS NULL
+                AND q.quality_issue IS NULL
             WHERE wp.archived = 0
               AND q.id IS NULL
             ORDER BY wp.next_review ASC
@@ -513,6 +523,7 @@ class Database:
                 ON q.target_word = wp.word
                 AND COALESCE(q.cluster_title, '') = wp.cluster_title
             WHERE q.answered_at IS NULL
+              AND q.quality_issue IS NULL
               AND wp.word IS NULL
               AND q.cluster_title IS NOT NULL
               AND q.cluster_title != ''
@@ -535,6 +546,7 @@ class Database:
                 ON q.target_word = cw.word
                 AND q.cluster_title = c.title
                 AND q.answered_at IS NULL
+                AND q.quality_issue IS NULL
             WHERE wp.word IS NULL
               AND q.id IS NULL
               AND c.id IN (
@@ -589,6 +601,7 @@ class Database:
                 ON q.target_word = cw.word
                 AND q.cluster_title = c.title
                 AND q.answered_at IS NULL
+                AND q.quality_issue IS NULL
             LEFT JOIN word_progress wp
                 ON wp.word = cw.word
                 AND wp.cluster_title = c.title
@@ -749,7 +762,7 @@ class Database:
         """Return all explanation and context_sentence texts from unanswered questions."""
         rows = self.conn.execute(
             "SELECT explanation, context_sentence FROM questions "
-            "WHERE answered_at IS NULL"
+            "WHERE answered_at IS NULL AND quality_issue IS NULL"
         ).fetchall()
         texts = []
         for r in rows:

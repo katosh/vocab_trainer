@@ -40,3 +40,4 @@ class Question:
     cluster_title: str | None
     llm_provider: str
     choice_details: list[dict] = field(default_factory=list)
+    quality_issue: str | None = None

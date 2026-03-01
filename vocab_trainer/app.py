@@ -193,6 +193,9 @@ async def _generate_in_background(initial_pairs: list[tuple[str, str]]):
             )
             if q:
                 db.save_question(q)
+                if q.quality_issue:
+                    _bg_log.warning("[%d/%d] Saved with quality issue for '%s' in '%s': %s",
+                                    idx, len(pairs), word, cluster_title, q.quality_issue)
                 generated += 1
             else:
                 _bg_log.warning("[%d/%d] Failed for '%s' in '%s'",
