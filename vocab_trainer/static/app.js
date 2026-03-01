@@ -176,6 +176,19 @@ function setAutoNarrate(enabled) {
     api('/api/settings', 'PUT', { auto_narrate: enabled }).catch(() => {});
 }
 
+/** Buffer an audio element and call onReady once fully loaded (Safari fix). */
+function bufferAudio(audio, onReady, onError) {
+    audio.oncanplaythrough = () => {
+        audio.oncanplaythrough = null;
+        onReady();
+    };
+    audio.onerror = () => {
+        audio.oncanplaythrough = null;
+        if (onError) onError();
+    };
+    audio.load();
+}
+
 function stopAllAudio() {
     if (narrationQueue) { narrationQueue.stop(); narrationQueue = null; }
     if (pendingAudioTimeout) { clearTimeout(pendingAudioTimeout); pendingAudioTimeout = null; }
@@ -709,12 +722,7 @@ async function submitAnswer(selectedIndex, questionData) {
             // Audio was pre-generated — wait for buffer before playing (Safari fix)
             audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
             audio.hidden = false;
-            audio.oncanplaythrough = () => {
-                audio.oncanplaythrough = null;
-                audio.play().catch(() => {});
-            };
-            audio.onerror = () => { audio.oncanplaythrough = null; };
-            audio.load();
+            bufferAudio(audio, () => audio.play().catch(() => {}));
         } else if (result.context_sentence) {
             // Audio not cached yet — show loading indicator and generate async
             audio.hidden = true;
@@ -729,12 +737,7 @@ async function submitAnswer(selectedIndex, questionData) {
                     if (ttsResult.audio_hash) {
                         audio.src = `/api/audio/${ttsResult.audio_hash}.mp3`;
                         audio.hidden = false;
-                        audio.oncanplaythrough = () => {
-                            audio.oncanplaythrough = null;
-                            audio.play().catch(() => {});
-                        };
-                        audio.onerror = () => { audio.oncanplaythrough = null; };
-                        audio.load();
+                        bufferAudio(audio, () => audio.play().catch(() => {}));
                     }
                 })
                 .catch(() => {
@@ -1061,19 +1064,16 @@ async function speakText(text, sourceEl) {
             audio.onended = () => {
                 if (sourceEl) sourceEl.classList.remove('speaking-active');
             };
-            audio.oncanplaythrough = () => {
-                audio.oncanplaythrough = null;
-                if (sourceEl) {
-                    sourceEl.classList.remove('speaking-loading');
-                    sourceEl.classList.add('speaking-active');
-                }
-                audio.play().catch(() => {});
-            };
-            audio.onerror = () => {
-                audio.oncanplaythrough = null;
-                if (sourceEl) sourceEl.classList.remove('speaking-loading');
-            };
-            audio.load();
+            bufferAudio(audio,
+                () => {
+                    if (sourceEl) {
+                        sourceEl.classList.remove('speaking-loading');
+                        sourceEl.classList.add('speaking-active');
+                    }
+                    audio.play().catch(() => {});
+                },
+                () => { if (sourceEl) sourceEl.classList.remove('speaking-loading'); },
+            );
         } else if (sourceEl) {
             sourceEl.classList.remove('speaking-loading');
         }
@@ -1207,18 +1207,17 @@ class NarrationQueue {
                     this.currentIndex++;
                     if (!this.paused) this._tryPlay();
                 };
-                audio.oncanplaythrough = () => {
-                    audio.oncanplaythrough = null;
-                    if (this.stopped) return;
-                    this.sentences[index].ready = true;
-                    this._tryPlay();
-                };
-                audio.onerror = () => {
-                    audio.oncanplaythrough = null;
-                    this.sentences[index].failed = true;
-                    if (index === this.currentIndex) this._tryPlay();
-                };
-                audio.load();
+                bufferAudio(audio,
+                    () => {
+                        if (this.stopped) return;
+                        this.sentences[index].ready = true;
+                        this._tryPlay();
+                    },
+                    () => {
+                        this.sentences[index].failed = true;
+                        if (index === this.currentIndex) this._tryPlay();
+                    },
+                );
             } else {
                 this.sentences[index].failed = true;
                 if (index === this.currentIndex) this._tryPlay();
