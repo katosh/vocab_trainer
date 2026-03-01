@@ -1177,35 +1177,6 @@ nav {
     font-size: 0.85em;
 }
 
-.chat-msg-actions {
-    margin-top: 8px;
-    display: flex;
-    gap: 6px;
-}
-
-.narrate-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 3px 14px;
-    font-family: var(--font-body);
-    font-size: 0.73rem;
-    font-weight: 600;
-    color: var(--text-dim);
-    cursor: pointer;
-    transition: all 0.15s;
-}
-
-.narrate-btn:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-}
-
-.narrate-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-}
-
 .chat-msg.streaming::after {
     content: '\25CF';
     color: var(--accent);
@@ -1266,6 +1237,10 @@ nav {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 4px 10px;
+    min-width: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     font-size: 1rem;
     color: var(--text-dim);
     cursor: pointer;
@@ -1276,6 +1251,12 @@ nav {
 .chat-narration-toggle:hover {
     border-color: var(--accent);
     color: var(--accent);
+}
+
+.chat-narration-toggle.is-playing {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-subtle);
 }
 
 

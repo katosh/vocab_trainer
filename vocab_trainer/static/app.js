@@ -74,6 +74,7 @@ let pendingAudioTimeout = null;
 let autoNarrateEnabled = true;
 let thinkingEnabled = false;
 let narrationQueue = null;
+let lastNarrableText = null;
 let sessionEventSource = null;
 let waitingForQuestion = false;
 
@@ -183,79 +184,124 @@ function stopAllAudio() {
     // Also stop the built-in TTS player
     const tts = document.getElementById('tts-audio');
     if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
-    narrationToggle.hide();
+    // Transition to idle (replay available) or hidden
+    if (lastNarrableText) {
+        narrationToggle._setState('idle');
+    } else {
+        narrationToggle.hide();
+    }
 }
 
 // ── Narration pause/play toggle (next to chat input) ─────────────────────
+// 4-state machine: hidden → idle → playing ↔ paused → idle (on done)
 const narrationToggle = {
     _btn: null,
+    _state: 'hidden',  // 'hidden' | 'idle' | 'playing' | 'paused'
+    _queue: null,       // current NarrationQueue when playing/paused
+
     _get() { return this._btn || (this._btn = document.getElementById('chat-narration-toggle')); },
-    _paused: false,
-    _pauseFn: null,   // () => pause current audio
-    _resumeFn: null,  // () => resume current audio
-    _cleanupFn: null, // () => called on hide
 
-    show(pauseFn, resumeFn, cleanupFn) {
+    _setState(state) {
+        this._state = state;
         const btn = this._get();
-        if (!btn) { console.error('narrationToggle: button not found in DOM'); return; }
-        this._paused = false;
-        this._pauseFn = pauseFn;
-        this._resumeFn = resumeFn;
-        this._cleanupFn = cleanupFn;
-        btn.innerHTML = ICONS.pause;
-        btn.title = 'Pause narration';
-        btn.classList.remove('hidden');
-        btn.onclick = () => this.toggle();
-        // Route headphone/media-key controls through the same toggle path
-        if ('mediaSession' in navigator) {
-            navigator.mediaSession.setActionHandler('pause', () => {
-                if (!this._paused) this.toggle();
-            });
-            navigator.mediaSession.setActionHandler('play', () => {
-                if (this._paused) this.toggle();
-            });
+        if (!btn) return;
+        btn.classList.remove('is-playing');
+        switch (state) {
+            case 'hidden':
+                btn.classList.add('hidden');
+                btn.onclick = null;
+                break;
+            case 'idle':
+                btn.innerHTML = ICONS.play;
+                btn.title = 'Play narration';
+                btn.classList.remove('hidden');
+                btn.onclick = () => this._onClickIdle();
+                break;
+            case 'playing':
+                btn.innerHTML = ICONS.pause;
+                btn.title = 'Pause narration';
+                btn.classList.remove('hidden');
+                btn.classList.add('is-playing');
+                btn.onclick = () => {
+                    if (this._queue) this._queue.pause();
+                    this._setState('paused');
+                };
+                break;
+            case 'paused':
+                btn.innerHTML = ICONS.play;
+                btn.title = 'Resume narration';
+                btn.classList.remove('hidden');
+                btn.onclick = () => {
+                    if (this._queue) this._queue.resume();
+                    this._setState('playing');
+                };
+                break;
         }
     },
 
-    toggle() {
-        if (this._paused) {
-            this._paused = false;
-            if (this._resumeFn) this._resumeFn();
-            const btn = this._get();
-            btn.innerHTML = ICONS.pause;
-            btn.title = 'Pause narration';
-        } else {
-            this._paused = true;
-            if (this._pauseFn) this._pauseFn();
-            const btn = this._get();
-            btn.innerHTML = ICONS.play;
-            btn.title = 'Resume narration';
-        }
+    /** Store narrable text, transition hidden→idle; no-op if playing/paused */
+    setNarrable(text) {
+        lastNarrableText = text;
+        if (this._state === 'hidden') this._setState('idle');
     },
 
-    // Sync UI when audio is paused/resumed externally (headphones, media controls)
-    syncPaused(paused) {
-        if (this._paused === paused) return;
-        this._paused = paused;
-        const btn = this._get();
-        if (btn) {
-            btn.innerHTML = paused ? ICONS.play : ICONS.pause;
-            btn.title = paused ? 'Resume narration' : 'Pause narration';
-        }
+    /** Attach a playing queue, transition to playing + set up Media Session */
+    attachQueue(queue) {
+        this._queue = queue;
+        this._setState('playing');
+        this._setupMediaSession();
+    },
+
+    /** Called when queue finishes — transition to idle (replay available) */
+    onQueueDone() {
+        this._queue = null;
+        this._setState('idle');
+        this._clearMediaSession();
+    },
+
+    /** Sync to playing state (called from _tryPlay on first sentence) */
+    syncPlaying() {
+        if (this._state !== 'playing') this._setState('playing');
     },
 
     hide() {
-        const btn = this._get();
-        btn.classList.add('hidden');
-        btn.onclick = null;
-        if (this._cleanupFn) this._cleanupFn();
-        this._pauseFn = null;
-        this._resumeFn = null;
-        this._cleanupFn = null;
-        if ('mediaSession' in navigator) {
-            navigator.mediaSession.setActionHandler('pause', null);
-            navigator.mediaSession.setActionHandler('play', null);
-        }
+        lastNarrableText = null;
+        this._queue = null;
+        this._setState('hidden');
+        this._clearMediaSession();
+    },
+
+    _onClickIdle() {
+        if (!lastNarrableText) return;
+        const q = new NarrationQueue(narrationQueue);
+        narrationQueue = q;
+        q.onDone = () => this.onQueueDone();
+        // Feed the stored text as complete sentences
+        q.feedToken(lastNarrableText);
+        q.flush();
+        this.attachQueue(q);
+    },
+
+    _setupMediaSession() {
+        if (!('mediaSession' in navigator)) return;
+        navigator.mediaSession.setActionHandler('pause', () => {
+            if (this._state === 'playing' && this._queue) {
+                this._queue.pause();
+                this._setState('paused');
+            }
+        });
+        navigator.mediaSession.setActionHandler('play', () => {
+            if (this._state === 'paused' && this._queue) {
+                this._queue.resume();
+                this._setState('playing');
+            }
+        });
+    },
+
+    _clearMediaSession() {
+        if (!('mediaSession' in navigator)) return;
+        navigator.mediaSession.setActionHandler('pause', null);
+        navigator.mediaSession.setActionHandler('play', null);
     },
 };
 
@@ -456,6 +502,7 @@ function updateProgress(p) {
 
 function showQuestion(data) {
     stopAllAudio();
+    lastNarrableText = null;
 
     if (data.session_complete) {
         showSummary(data.summary || { total: 0, correct: 0, accuracy: 0 });
@@ -659,10 +706,15 @@ async function submitAnswer(selectedIndex, questionData) {
         stopAllAudio();
         const audio = document.getElementById('tts-audio');
         if (result.context_audio_hash) {
-            // Audio was pre-generated — play immediately
+            // Audio was pre-generated — wait for buffer before playing (Safari fix)
             audio.src = `/api/audio/${result.context_audio_hash}.mp3`;
             audio.hidden = false;
-            audio.play().catch(() => {});
+            audio.oncanplaythrough = () => {
+                audio.oncanplaythrough = null;
+                audio.play().catch(() => {});
+            };
+            audio.onerror = () => { audio.oncanplaythrough = null; };
+            audio.load();
         } else if (result.context_sentence) {
             // Audio not cached yet — show loading indicator and generate async
             audio.hidden = true;
@@ -677,7 +729,12 @@ async function submitAnswer(selectedIndex, questionData) {
                     if (ttsResult.audio_hash) {
                         audio.src = `/api/audio/${ttsResult.audio_hash}.mp3`;
                         audio.hidden = false;
-                        audio.play().catch(() => {});
+                        audio.oncanplaythrough = () => {
+                            audio.oncanplaythrough = null;
+                            audio.play().catch(() => {});
+                        };
+                        audio.onerror = () => { audio.oncanplaythrough = null; };
+                        audio.load();
                     }
                 })
                 .catch(() => {
@@ -1001,58 +1058,28 @@ async function speakText(text, sourceEl) {
         if (result.audio_hash) {
             const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
             activeAudioElements.push(audio);
-            if (sourceEl) {
-                audio.onended = () => sourceEl.classList.remove('speaking-active');
-                sourceEl.classList.remove('speaking-loading');
-                sourceEl.classList.add('speaking-active');
-            }
-            audio.play().catch(() => {});
+            audio.onended = () => {
+                if (sourceEl) sourceEl.classList.remove('speaking-active');
+            };
+            audio.oncanplaythrough = () => {
+                audio.oncanplaythrough = null;
+                if (sourceEl) {
+                    sourceEl.classList.remove('speaking-loading');
+                    sourceEl.classList.add('speaking-active');
+                }
+                audio.play().catch(() => {});
+            };
+            audio.onerror = () => {
+                audio.oncanplaythrough = null;
+                if (sourceEl) sourceEl.classList.remove('speaking-loading');
+            };
+            audio.load();
         } else if (sourceEl) {
             sourceEl.classList.remove('speaking-loading');
         }
     } catch (e) {
         if (sourceEl) sourceEl.classList.remove('speaking-loading');
         console.error('TTS failed:', e);
-    }
-}
-
-function addNarrateButton(msgEl, rawText) {
-    const bar = document.createElement('div');
-    bar.className = 'chat-msg-actions';
-    const btn = document.createElement('button');
-    btn.className = 'narrate-btn';
-    btn.innerHTML = ICONS.play + ' Narrate';
-    btn.onclick = () => narrateText(btn, rawText);
-    bar.appendChild(btn);
-    msgEl.appendChild(bar);
-}
-
-async function narrateText(btn, text) {
-    stopAllAudio();
-    btn.disabled = true;
-    btn.innerHTML = ICONS.play + ' Generating...';
-    try {
-        const result = await api('/api/tts/generate', 'POST', { text });
-        if (result.audio_hash) {
-            const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
-            activeAudioElements.push(audio);
-            btn.disabled = false;
-            audio.onended = () => {
-                btn.innerHTML = ICONS.play + ' Narrate';
-                narrationToggle.hide();
-            };
-            btn.onclick = () => narrateText(btn, text);
-            btn.innerHTML = ICONS.stop + ' Stop';
-            narrationToggle.show(
-                () => audio.pause(),
-                () => audio.play().catch(() => {}),
-            );
-            audio.play().catch(() => {});
-        }
-    } catch (e) {
-        btn.innerHTML = ICONS.play + ' Narrate';
-        btn.disabled = false;
-        console.error('Narration failed:', e);
     }
 }
 
@@ -1175,13 +1202,23 @@ class NarrationQueue {
                 const audio = new Audio(`/api/audio/${result.audio_hash}.mp3`);
                 activeAudioElements.push(audio);
                 this.sentences[index].audio = audio;
-                this.sentences[index].ready = true;
                 audio.onended = () => {
                     this.playing = false;
                     this.currentIndex++;
                     if (!this.paused) this._tryPlay();
                 };
-                this._tryPlay();
+                audio.oncanplaythrough = () => {
+                    audio.oncanplaythrough = null;
+                    if (this.stopped) return;
+                    this.sentences[index].ready = true;
+                    this._tryPlay();
+                };
+                audio.onerror = () => {
+                    audio.oncanplaythrough = null;
+                    this.sentences[index].failed = true;
+                    if (index === this.currentIndex) this._tryPlay();
+                };
+                audio.load();
             } else {
                 this.sentences[index].failed = true;
                 if (index === this.currentIndex) this._tryPlay();
@@ -1214,13 +1251,8 @@ class NarrationQueue {
             activeAudioElements = [];
             const tts = document.getElementById('tts-audio');
             if (tts) { tts.pause(); tts.currentTime = 0; tts.onended = null; }
-            // Show pause/play toggle as soon as first sentence plays
-            const q = this;
-            narrationToggle.show(
-                () => q.pause(),
-                () => q.resume(),
-            );
         }
+        narrationToggle.syncPlaying();
         this.playing = true;
         sentence.audio.play().catch(() => {
             this.playing = false;
@@ -1252,11 +1284,8 @@ async function sendChatMessage(message) {
     const autoNarrating = autoNarrateEnabled;
     if (autoNarrating) {
         narrationQueue = new NarrationQueue(narrationQueue);
-        const q = narrationQueue;
-        narrationToggle.show(
-            () => q.pause(),
-            () => q.resume(),
-        );
+        narrationQueue.onDone = () => narrationToggle.onQueueDone();
+        narrationToggle.attachQueue(narrationQueue);
     }
 
     appendChatMessage('user', message);
@@ -1328,32 +1357,9 @@ async function sendChatMessage(message) {
         chatHistory.push({ role: 'user', content: message });
         chatHistory.push({ role: 'assistant', content: fullResponse });
 
+        // Store text for persistent narration button (replay)
         if (fullResponse) {
-            if (autoNarrating && narrationQueue && !narrationQueue.stopped) {
-                // Narration is playing — show pause/play toggle next to input
-                const bar = document.createElement('div');
-                bar.className = 'chat-msg-actions';
-                const btn = document.createElement('button');
-                btn.className = 'narrate-btn';
-                btn.innerHTML = ICONS.stop + ' Stop';
-                const queue = narrationQueue;
-                const switchToNarrate = () => {
-                    btn.innerHTML = ICONS.play + ' Narrate';
-                    btn.disabled = false;
-                    btn.onclick = () => narrateText(btn, fullResponse);
-                    narrationToggle.hide();
-                };
-                btn.onclick = () => {
-                    queue.stop();
-                    switchToNarrate();
-                };
-                queue.onDone = switchToNarrate;
-                bar.appendChild(btn);
-                assistantEl.appendChild(bar);
-            } else {
-                addNarrateButton(assistantEl, fullResponse);
-            }
-            // ResizeObserver handles scroll; button append triggers it
+            narrationToggle.setNarrable(fullResponse);
         }
     } catch (e) {
         assistantEl.innerHTML = simpleMarkdown(`[Connection error: ${e.message}]`);
