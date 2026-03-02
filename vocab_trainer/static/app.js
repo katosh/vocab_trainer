@@ -416,11 +416,11 @@ async function refreshStats() {
         document.getElementById('stat-total').textContent =
             stats.total_words + ' / ' + stats.total_clusters;
         document.getElementById('stat-active').textContent =
-            stats.active_words + ' / ' + stats.words_due;
-        document.getElementById('stat-reviewed').textContent = stats.words_reviewed;
+            stats.clusters_active + ' / ' + stats.clusters_due;
+        document.getElementById('stat-reviewed').textContent = stats.clusters_reviewed;
         document.getElementById('stat-accuracy').textContent = stats.accuracy + '%';
         document.getElementById('stat-sessions').textContent = stats.total_sessions;
-        document.getElementById('stat-archived').textContent = stats.questions_archived;
+        document.getElementById('stat-archived').textContent = stats.clusters_archived;
     } catch (e) {
         console.error('Failed to load stats:', e);
     }
@@ -733,22 +733,21 @@ async function submitAnswer(selectedIndex, questionData) {
         const archiveText = document.getElementById('archive-text');
         const archiveToggle = document.getElementById('archive-toggle');
         const repeatBtn = document.getElementById('repeat-btn');
-        const archiveWord = result.archive && result.archive.word;
         const archiveCluster = result.archive && result.archive.cluster_title;
         const savedSrs = result.archive ? {
             easiness_factor: result.archive.easiness_factor,
             interval_days: result.archive.interval_days,
             repetitions: result.archive.repetitions,
             next_review: result.archive.next_review,
-            archive_threshold: result.archive.archive_threshold || 21,
+            archive_threshold: result.archive.archive_threshold || 45,
         } : null;
-        if (archiveWord) {
+        if (archiveCluster) {
             archiveEl.classList.remove('hidden', 'archived', 'kept');
             if (result.correct) {
                 repeatBtn.textContent = 'Repeat';
                 repeatBtn.disabled = false;
                 repeatBtn.classList.remove('hidden');
-                repeatBtn.onclick = () => markRepeat(archiveWord, archiveCluster, savedSrs);
+                repeatBtn.onclick = () => markRepeat(archiveCluster, savedSrs);
             } else {
                 repeatBtn.classList.add('hidden');
             }
@@ -756,17 +755,17 @@ async function submitAnswer(selectedIndex, questionData) {
                 archiveEl.classList.add('archived');
                 archiveText.innerHTML = `<strong>Archived</strong> — ${result.archive.reason}`;
                 archiveToggle.textContent = 'Keep in rotation';
-                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, false, savedSrs);
+                archiveToggle.onclick = () => toggleArchive(archiveCluster, false, savedSrs);
             } else {
                 archiveEl.classList.add('kept');
                 const iv = result.archive.interval_days || 0;
-                const th = result.archive.archive_threshold || 21;
+                const th = result.archive.archive_threshold || 45;
                 const progress = iv > 0
                     ? ` — interval ${Math.round(iv)} of ${th} days`
                     : '';
                 archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
                 archiveToggle.textContent = 'Archive';
-                archiveToggle.onclick = () => toggleArchive(archiveWord, archiveCluster, true, savedSrs);
+                archiveToggle.onclick = () => toggleArchive(archiveCluster, true, savedSrs);
             }
         } else {
             archiveEl.classList.add('hidden');
@@ -871,65 +870,65 @@ async function submitAnswer(selectedIndex, questionData) {
 
 let _repeatActive = false;
 
-async function markRepeat(word, clusterTitle, savedSrs) {
+async function markRepeat(clusterTitle, savedSrs) {
     try {
         await api('/api/questions/reset-due', 'POST', {
-            word, cluster_title: clusterTitle,
+            cluster_title: clusterTitle,
         });
         _repeatActive = true;
         const repeatBtn = document.getElementById('repeat-btn');
         const archiveText = document.getElementById('archive-text');
-        const th = savedSrs.archive_threshold || 21;
+        const th = savedSrs.archive_threshold || 45;
         repeatBtn.textContent = 'Undo repeat';
         archiveText.innerHTML = `<strong>In rotation</strong> — interval 1 of ${th} days`;
-        repeatBtn.onclick = () => undoRepeat(word, clusterTitle, savedSrs);
+        repeatBtn.onclick = () => undoRepeat(clusterTitle, savedSrs);
     } catch (e) {
         console.error('Repeat failed:', e);
     }
 }
 
-async function undoRepeat(word, clusterTitle, savedSrs) {
+async function undoRepeat(clusterTitle, savedSrs) {
     try {
-        await api('/api/word-progress/restore-srs', 'POST', {
-            word, cluster_title: clusterTitle, ...savedSrs,
+        await api('/api/cluster-progress/restore-srs', 'POST', {
+            cluster_title: clusterTitle, ...savedSrs,
         });
         _repeatActive = false;
         const repeatBtn = document.getElementById('repeat-btn');
         const archiveText = document.getElementById('archive-text');
         const iv = savedSrs.interval_days || 0;
-        const th = savedSrs.archive_threshold || 21;
+        const th = savedSrs.archive_threshold || 45;
         const progress = iv > 0
             ? ` — interval ${Math.round(iv)} of ${th} days`
             : '';
         archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
         repeatBtn.textContent = 'Repeat';
-        repeatBtn.onclick = () => markRepeat(word, clusterTitle, savedSrs);
+        repeatBtn.onclick = () => markRepeat(clusterTitle, savedSrs);
     } catch (e) {
         console.error('Undo repeat failed:', e);
     }
 }
 
-function _showRepeatState(repeatBtn, archiveText, word, clusterTitle, savedSrs) {
+function _showRepeatState(repeatBtn, archiveText, clusterTitle, savedSrs) {
     repeatBtn.classList.remove('hidden');
     repeatBtn.disabled = false;
-    const th = savedSrs.archive_threshold || 21;
+    const th = savedSrs.archive_threshold || 45;
     if (_repeatActive) {
         repeatBtn.textContent = 'Undo repeat';
         archiveText.innerHTML = `<strong>In rotation</strong> — interval 1 of ${th} days`;
-        repeatBtn.onclick = () => undoRepeat(word, clusterTitle, savedSrs);
+        repeatBtn.onclick = () => undoRepeat(clusterTitle, savedSrs);
     } else {
         const iv = savedSrs.interval_days || 0;
         const progress = iv > 0 ? ` — interval ${Math.round(iv)} of ${th} days` : '';
         archiveText.innerHTML = `<strong>In rotation</strong>${progress}`;
         repeatBtn.textContent = 'Repeat';
-        repeatBtn.onclick = () => markRepeat(word, clusterTitle, savedSrs);
+        repeatBtn.onclick = () => markRepeat(clusterTitle, savedSrs);
     }
 }
 
-async function toggleArchive(word, clusterTitle, archived, savedSrs) {
+async function toggleArchive(clusterTitle, archived, savedSrs) {
     try {
-        await api('/api/word-progress/archive', 'POST', {
-            word, cluster_title: clusterTitle, archived,
+        await api('/api/cluster-progress/archive', 'POST', {
+            cluster_title: clusterTitle, archived,
         });
         const archiveEl = document.getElementById('archive-status');
         const archiveText = document.getElementById('archive-text');
@@ -940,14 +939,14 @@ async function toggleArchive(word, clusterTitle, archived, savedSrs) {
             archiveEl.classList.add('archived');
             archiveText.innerHTML = '<strong>Archived</strong> — manually archived';
             archiveToggle.textContent = 'Keep in rotation';
-            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, false, savedSrs);
+            archiveToggle.onclick = () => toggleArchive(clusterTitle, false, savedSrs);
             repeatBtn.classList.add('hidden');
         } else {
             archiveEl.classList.add('kept');
             archiveToggle.textContent = 'Archive';
-            archiveToggle.onclick = () => toggleArchive(word, clusterTitle, true, savedSrs);
+            archiveToggle.onclick = () => toggleArchive(clusterTitle, true, savedSrs);
             if (savedSrs) {
-                _showRepeatState(repeatBtn, archiveText, word, clusterTitle, savedSrs);
+                _showRepeatState(repeatBtn, archiveText, clusterTitle, savedSrs);
             } else {
                 repeatBtn.classList.add('hidden');
                 archiveText.innerHTML = '<strong>In rotation</strong>';
@@ -1480,7 +1479,7 @@ async function refreshLibrary() {
 function renderLibraryPanel(containerId, entries, isArchived) {
     const container = document.getElementById(containerId);
     if (entries.length === 0) {
-        const msg = isArchived ? 'No archived words.' : 'No active words yet. Start a quiz session to begin.';
+        const msg = isArchived ? 'No archived clusters.' : 'No active clusters yet. Start a quiz session to begin.';
         container.innerHTML = `<p class="library-empty"><img class="library-illustration" src="/img/library-empty.png" alt="" width="160" height="160">${msg}</p>`;
         return;
     }
@@ -1509,8 +1508,7 @@ function renderLibraryPanel(containerId, entries, isArchived) {
 
         let html = `<div class="qli-header">`;
         html += `<div class="qli-word-row">`;
-        html += `<strong class="qli-word">${entry.target_word}</strong>`;
-        if (entry.cluster_title) html += `<span class="qli-cluster">${entry.cluster_title}</span>`;
+        html += `<strong class="qli-word">${entry.cluster_title}</strong>`;
         html += `</div>`;
         html += `<div class="qli-stats">`;
         html += `<span>shown ${totalShown}x, ${totalCorrect}/${totalShown} correct</span>`;
@@ -1518,13 +1516,23 @@ function renderLibraryPanel(containerId, entries, isArchived) {
         html += `</div>`;
         html += `</div>`;
 
+        // Per-word accuracy chips
+        const words = entry.words || [];
+        if (words.length > 0) {
+            html += `<div class="qli-word-chips">`;
+            for (const w of words) {
+                html += `<span class="qli-word-chip">${w.word} (${w.correct}/${w.total})</span>`;
+            }
+            html += `</div>`;
+        }
+
         html += `<div class="qli-actions">`;
         if (isArchived) {
-            html += `<button class="qli-btn" data-action="restore" data-word="${entry.target_word}" data-cluster="${entry.cluster_title || ''}">Restore</button>`;
+            html += `<button class="qli-btn" data-action="restore" data-cluster="${entry.cluster_title || ''}">Restore</button>`;
         } else {
-            html += `<button class="qli-btn" data-action="archive" data-word="${entry.target_word}" data-cluster="${entry.cluster_title || ''}">Archive</button>`;
+            html += `<button class="qli-btn" data-action="archive" data-cluster="${entry.cluster_title || ''}">Archive</button>`;
         }
-        html += `<button class="qli-btn" data-action="reset" data-word="${entry.target_word}" data-cluster="${entry.cluster_title || ''}">Reset Due</button>`;
+        html += `<button class="qli-btn" data-action="reset" data-cluster="${entry.cluster_title || ''}">Reset Due</button>`;
         html += `</div>`;
 
         item.innerHTML = html;
@@ -1538,21 +1546,20 @@ function renderLibraryPanel(containerId, entries, isArchived) {
         if (!btn) return;
         e.stopPropagation();
         const action = btn.dataset.action;
-        const word = btn.dataset.word;
         const cluster = btn.dataset.cluster || '';
 
         if (action === 'archive' || action === 'restore') {
             const archived = action === 'archive';
             btn.disabled = true;
             btn.textContent = archived ? 'Archiving...' : 'Restoring...';
-            await api('/api/word-progress/archive', 'POST', {
-                word, cluster_title: cluster, archived,
+            await api('/api/cluster-progress/archive', 'POST', {
+                cluster_title: cluster, archived,
             });
             await refreshLibrary();
         } else if (action === 'reset') {
             btn.disabled = true;
             btn.textContent = 'Resetting...';
-            await api('/api/questions/reset-due', 'POST', { word, cluster_title: cluster });
+            await api('/api/questions/reset-due', 'POST', { cluster_title: cluster });
             await refreshLibrary();
         }
     });

@@ -79,30 +79,30 @@ _bg_log = logging.getLogger("vocab_trainer.bg")
 _bg_tasks: set[asyncio.Task] = set()
 
 
-def _collect_generation_needs() -> tuple[list[tuple[str, str]], int, int]:
-    """Find word-clusters needing questions.
+def _collect_generation_needs() -> tuple[list[str], int, int]:
+    """Find clusters needing questions.
 
-    Returns (pairs, active_count, new_count).
+    Returns (cluster_titles, active_count, new_count).
     """
     db = get_db()
     s = get_settings()
 
-    # 1. Active word-clusters that need replacement questions
-    needing = db.get_word_clusters_needing_questions()
-    pairs = [(n["word"], n["cluster_title"]) for n in needing]
-    active_count = len(pairs)
+    # 1. Active clusters that need replacement questions
+    needing = db.get_clusters_needing_questions()
+    cluster_titles = [n["cluster_title"] for n in needing]
+    active_count = len(cluster_titles)
 
-    # 2. New word-clusters without ready questions (up to session_size)
-    new_ready = db.get_new_word_clusters_with_ready_count()
+    # 2. New clusters without ready questions (up to session_size)
+    new_ready = db.get_new_clusters_with_ready_count()
     new_slots = max(0, s.session_size - new_ready)
     new_count = 0
     if new_slots > 0:
-        new_needing = db.get_new_word_clusters_without_questions(limit=new_slots)
-        new_pairs = [(n["word"], n["cluster_title"]) for n in new_needing]
-        pairs.extend(new_pairs)
-        new_count = len(new_pairs)
+        new_needing = db.get_new_clusters_without_questions(limit=new_slots)
+        new_titles = [n["cluster_title"] for n in new_needing]
+        cluster_titles.extend(new_titles)
+        new_count = len(new_titles)
 
-    return pairs, active_count, new_count
+    return cluster_titles, active_count, new_count
 
 
 def _log_needs(active_count: int, new_count: int) -> str:
@@ -136,81 +136,79 @@ def _pregenerate_audio(*texts: str) -> None:
 
 
 async def _ensure_question_buffer():
-    """Kick off background generation if word-clusters need questions."""
+    """Kick off background generation if clusters need questions."""
     global _bg_generating
     if _bg_generating:
         _bg_log.debug("Buffer check: skipped (generation already running)")
         return
 
-    pairs, active_count, new_count = _collect_generation_needs()
-    if not pairs:
+    cluster_titles, active_count, new_count = _collect_generation_needs()
+    if not cluster_titles:
         return
 
-    _bg_log.info("Buffer: %s word-clusters need questions",
+    _bg_log.info("Buffer: %s clusters need questions",
                  _log_needs(active_count, new_count))
 
     _bg_generating = True
-    task = asyncio.create_task(_generate_in_background(pairs))
+    task = asyncio.create_task(_generate_in_background(cluster_titles))
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
 
 
-async def _generate_in_background(initial_pairs: list[tuple[str, str]]):
+async def _generate_in_background(initial_clusters: list[str]):
     """Generate questions one at a time, polling for new needs between each.
 
-    When the user answers questions mid-batch, their word-clusters need
+    When the user answers questions mid-batch, their clusters need
     replacement questions.  Instead of waiting for the batch to finish,
     we poll after each generation and grow the queue dynamically.
     """
     global _bg_generating
     cancelled = False
     try:
+        from vocab_trainer.question_generator import _pick_target_in_cluster
+
         db = get_db()
         llm = _get_llm()
-        pairs = list(initial_pairs)
-        seen: set[tuple[str, str]] = set(pairs)
+        queue = list(initial_clusters)
+        seen: set[str] = set(queue)
         generated = 0
         idx = 0
 
-        while idx < len(pairs):
-            word, cluster_title = pairs[idx]
+        while idx < len(queue):
+            cluster_title = queue[idx]
             idx += 1
 
             cluster = db.get_cluster_by_title(cluster_title)
             if not cluster:
                 continue
             cw = db.get_cluster_words(cluster["id"])
-            word_info = next(
-                (w for w in cw if w["word"].lower() == word.lower()), None
-            )
-            if not word_info:
+            if len(cw) < 4:
                 continue
+            word_info = _pick_target_in_cluster(db, cluster_title, cw)
 
-            _bg_log.info("[%d/%d] Generating for '%s'",
-                         idx, len(pairs), cluster_title)
+            _bg_log.info("[%d/%d] Generating for '%s' (target: %s)",
+                         idx, len(queue), cluster_title, word_info["word"])
             q = await generate_question(
                 llm, db, cluster=cluster, target_word_info=word_info,
             )
             if q:
                 db.save_question(q)
                 if q.quality_issue:
-                    _bg_log.warning("[%d/%d] Saved with quality issue for '%s' in '%s': %s",
-                                    idx, len(pairs), word, cluster_title, q.quality_issue)
+                    _bg_log.warning("[%d/%d] Saved with quality issue for '%s': %s",
+                                    idx, len(queue), cluster_title, q.quality_issue)
                 generated += 1
             else:
-                _bg_log.warning("[%d/%d] Failed for '%s' in '%s'",
-                                idx, len(pairs), word, cluster_title)
+                _bg_log.warning("[%d/%d] Failed for '%s'",
+                                idx, len(queue), cluster_title)
 
-            # Poll for active word-clusters needing replacement (answered mid-batch).
-            # Don't re-query new word-clusters — they're already queued and the
-            # RANDOM() ordering would add duplicates under different names.
-            for n in db.get_word_clusters_needing_questions():
-                p = (n["word"], n["cluster_title"])
-                if p not in seen:
-                    pairs.append(p)
-                    seen.add(p)
-                    _bg_log.info("Buffer grew: +1 active (%s / %s), now %d total",
-                                 p[0], p[1], len(pairs))
+            # Poll for active clusters needing replacement (answered mid-batch).
+            for n in db.get_clusters_needing_questions():
+                ct = n["cluster_title"]
+                if ct not in seen:
+                    queue.append(ct)
+                    seen.add(ct)
+                    _bg_log.info("Buffer grew: +1 active (%s), now %d total",
+                                 ct, len(queue))
 
         _bg_log.info("Generated %d questions, bank now %d ready",
                      generated, db.get_ready_question_count())
@@ -437,17 +435,17 @@ async def api_session_start():
 
     session_id = db.start_session()
 
-    # Load ready questions with SRS priority (due reviews + new words only)
+    # Load ready questions with SRS priority (due reviews + new clusters only)
     questions_data = db.get_session_questions(limit=200)
-    seen_pairs: set[tuple[str, str]] = set()
+    seen_clusters: set[str] = set()
     deduped: list[dict] = []
     review_count = 0
     new_count = 0
     for q in questions_data:
-        pair = (q["target_word"].lower(), (q.get("cluster_title") or "").lower())
-        if pair in seen_pairs:
+        ct = (q.get("cluster_title") or "").lower()
+        if ct in seen_clusters:
             continue
-        seen_pairs.add(pair)
+        seen_clusters.add(ct)
         deduped.append(q)
         if q.get("priority") == 0:
             review_count += 1
@@ -479,7 +477,7 @@ async def api_session_start():
         "new_count": 0,
         "target": s.session_size,
         "seen_ids": {q["id"] for q in questions_data},
-        "seen_pairs": seen_pairs,
+        "seen_clusters": seen_clusters,
         "question_answered": False,
     }
 
@@ -520,10 +518,10 @@ async def api_session_answer(request: Request):
     word = current_q["correct_word"]
     cluster_title = current_q.get("cluster_title") or ""
 
-    # SRS update on word_progress (includes archive decision)
+    # SRS update on cluster_progress (includes archive decision)
     quality = quality_from_answer(correct, time_seconds)
     archive_info = record_review(
-        db, word, cluster_title, quality, s.archive_interval_days,
+        db, cluster_title, quality, s.archive_interval_days,
     )
 
     # Mark question as answered (historical)
@@ -618,9 +616,9 @@ def _session_progress(session: dict) -> dict:
 
 
 def _load_more_questions(db, settings, session) -> list[dict]:
-    """Load additional questions from the DB, skipping already-seen pairs."""
+    """Load additional questions from the DB, skipping already-seen clusters."""
     seen_ids = session["seen_ids"]
-    seen_pairs = session["seen_pairs"]
+    seen_clusters = session["seen_clusters"]
     need = max(0, session["target"] - len(session["questions"]))
     if need <= 0:
         return []
@@ -628,12 +626,12 @@ def _load_more_questions(db, settings, session) -> list[dict]:
     for q in db.get_session_questions(limit=need + len(seen_ids)):
         if q["id"] in seen_ids:
             continue
-        pair = (q["target_word"].lower(), (q.get("cluster_title") or "").lower())
-        if pair in seen_pairs:
+        ct = (q.get("cluster_title") or "").lower()
+        if ct in seen_clusters:
             continue
         questions.append(q)
         seen_ids.add(q["id"])
-        seen_pairs.add(pair)
+        seen_clusters.add(ct)
         if len(questions) >= need:
             break
     return questions
@@ -838,56 +836,52 @@ async def api_session_active():
     return result
 
 
-# ── API: Word-progress archive ─────────────────────────────────────────
+# ── API: Cluster-progress archive ──────────────────────────────────────
 
-@app.post("/api/word-progress/archive")
-async def api_word_progress_archive(request: Request):
+@app.post("/api/cluster-progress/archive")
+async def api_cluster_progress_archive(request: Request):
     body = await request.json()
-    word = body.get("word", "")
     cluster_title = body.get("cluster_title", "")
     archived = body.get("archived", True)
-    if not word:
-        raise HTTPException(400, "No word provided")
+    if not cluster_title:
+        raise HTTPException(400, "No cluster_title provided")
     db = get_db()
-    db.set_word_archived(word, cluster_title, archived)
+    db.set_cluster_archived(cluster_title, archived)
     if not archived:
         await _ensure_question_buffer()
-    return {"word": word, "cluster_title": cluster_title, "archived": archived}
+    return {"cluster_title": cluster_title, "archived": archived}
 
 
 # ── API: Question library ─────────────────────────────────────────────────
 
 @app.get("/api/questions/active")
 async def api_questions_active():
-    return get_db().get_active_questions()
+    return get_db().get_active_clusters()
 
 
 @app.get("/api/questions/archived")
 async def api_questions_archived():
-    return get_db().get_archived_questions()
+    return get_db().get_archived_clusters()
 
 
 @app.post("/api/questions/reset-due")
 async def api_questions_reset_due(request: Request):
     body = await request.json()
-    word = body.get("word", "")
-    cluster_title = body.get("cluster_title")
-    if not word:
-        raise HTTPException(400, "No word provided")
-    get_db().reset_word_due(word, cluster_title)
+    cluster_title = body.get("cluster_title", "")
+    if not cluster_title:
+        raise HTTPException(400, "No cluster_title provided")
+    get_db().reset_cluster_due(cluster_title)
     return {"ok": True}
 
 
-@app.post("/api/word-progress/restore-srs")
+@app.post("/api/cluster-progress/restore-srs")
 async def api_restore_srs(request: Request):
     """Restore SRS state to previously recorded values (undo repeat)."""
     body = await request.json()
-    word = body.get("word", "")
     cluster_title = body.get("cluster_title", "")
-    if not word:
-        raise HTTPException(400, "No word provided")
-    get_db().upsert_word_progress(
-        word=word,
+    if not cluster_title:
+        raise HTTPException(400, "No cluster_title provided")
+    get_db().upsert_cluster_progress(
         cluster_title=cluster_title,
         easiness_factor=body["easiness_factor"],
         interval_days=body["interval_days"],

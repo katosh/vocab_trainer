@@ -67,20 +67,19 @@ def quality_from_answer(correct: bool, time_seconds: float | None = None) -> int
 
 def record_review(
     db: Database,
-    word: str,
     cluster_title: str,
     quality: int,
-    archive_interval_days: int = 21,
+    archive_interval_days: int = 45,
 ) -> dict:
-    """Record a review of a (word, cluster) pair using SM-2.
+    """Record a review of a cluster using SM-2.
 
-    When a word is overdue and answered correctly, the scheduled interval is
+    When a cluster is overdue and answered correctly, the scheduled interval is
     boosted by half the overdue period before feeding into SM-2.
 
     Returns {"archived": bool, "reason": str, "interval_days": float,
              "archive_threshold": int}.
     """
-    progress = db.get_word_progress(word, cluster_title)
+    progress = db.get_cluster_progress(cluster_title)
 
     if progress:
         ef = progress["easiness_factor"]
@@ -106,8 +105,7 @@ def record_review(
     next_review = datetime.now(timezone.utc) + timedelta(days=new_interval)
     correct = quality >= 3
 
-    db.upsert_word_progress(
-        word=word,
+    db.upsert_cluster_progress(
         cluster_title=cluster_title,
         easiness_factor=new_ef,
         interval_days=new_interval,
@@ -122,7 +120,7 @@ def record_review(
     if correct and new_interval >= archive_interval_days:
         should_archive = True
         reason = f"Mastered (interval {new_interval:.0f} days)"
-        db.set_word_archived(word, cluster_title, True)
+        db.set_cluster_archived(cluster_title, True)
 
     return {
         "archived": should_archive,

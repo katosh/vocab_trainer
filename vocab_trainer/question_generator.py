@@ -51,33 +51,61 @@ def _pick_question_type() -> str:
     return "fill_blank"
 
 
-def _pick_word_cluster(db: Database) -> tuple[dict, dict] | None:
-    """Pick a (cluster, word_info) pair weighted by coverage deficit.
+def _pick_cluster_and_target(db: Database) -> tuple[dict, dict] | None:
+    """Pick a cluster weighted by coverage deficit, then a target word within it.
 
-    Builds a categorical distribution over all (word, cluster) pairs where
-    each pair's probability is proportional to 1 / (1 + question_count).
-    Words that already have many questions are unlikely to be chosen;
-    words with zero questions are most likely.
+    Step 1: Pick cluster proportional to 1 / (1 + question_count).
+    Step 2: Pick target word within cluster using _pick_target_in_cluster().
 
-    Returns (cluster_dict, word_info_dict) or None if no valid pairs exist.
+    Returns (cluster_dict, word_info_dict) or None if no valid clusters exist.
     """
-    pairs = db.get_word_cluster_question_counts()
-    if not pairs:
+    clusters = db.get_cluster_question_counts()
+    if not clusters:
         return None
 
-    weights = [1.0 / (1 + p["question_count"]) for p in pairs]
-    chosen = random.choices(pairs, weights=weights, k=1)[0]
+    weights = [1.0 / (1 + c["question_count"]) for c in clusters]
+    chosen = random.choices(clusters, weights=weights, k=1)[0]
 
     cluster = db.get_cluster_by_title(chosen["cluster_title"])
     if cluster is None:
         return None
 
-    word_info = {
+    cluster_words = db.get_cluster_words(cluster["id"])
+    if len(cluster_words) < 4:
+        return None
+
+    word_info = _pick_target_in_cluster(db, chosen["cluster_title"], cluster_words)
+    return cluster, word_info
+
+
+def _pick_target_in_cluster(
+    db: Database, cluster_title: str, cluster_words: list[dict],
+) -> dict:
+    """Pick a target word within a cluster, weighted by error rate.
+
+    Never-tested words get weight 2.0, others get 1.0 + error_rate
+    (range [1.0, 2.0]).
+    """
+    accuracy = db.get_cluster_word_accuracy(cluster_title)
+    acc_map = {a["word"].lower(): a for a in accuracy}
+
+    weights = []
+    for cw in cluster_words:
+        key = cw["word"].lower()
+        if key in acc_map:
+            total = acc_map[key]["total"]
+            correct = acc_map[key]["correct"]
+            error_rate = 1.0 - (correct / total) if total > 0 else 1.0
+            weights.append(1.0 + error_rate)
+        else:
+            weights.append(2.0)  # never tested — highest priority
+
+    chosen = random.choices(cluster_words, weights=weights, k=1)[0]
+    return {
         "word": chosen["word"],
         "meaning": chosen["meaning"],
         "distinction": chosen["distinction"],
     }
-    return cluster, word_info
 
 
 def _extract_json(text: str) -> dict | None:
@@ -424,7 +452,7 @@ async def generate_question(
     """
     # Pick cluster + word using coverage-weighted selection if not provided
     if cluster is None or target_word_info is None:
-        picked = _pick_word_cluster(db)
+        picked = _pick_cluster_and_target(db)
         if picked is None:
             return None
         cluster, target_word_info = picked
@@ -530,33 +558,35 @@ async def generate_batch(
     db: Database,
     count: int = 10,
     target_words: list[str] | None = None,
-    target_pairs: list[tuple[str, str]] | None = None,
+    target_clusters: list[str] | None = None,
 ) -> list[Question]:
     """Generate a batch of questions and save to database.
 
-    target_pairs: list of (word, cluster_title) to generate for specific
-    word-cluster combinations (e.g. refilling after a question is answered).
+    target_clusters: list of cluster_titles to generate for specific
+    clusters (e.g. refilling after a question is answered).
+    Target word within each cluster is picked by _pick_target_in_cluster().
     """
     questions: list[Question] = []
 
-    # Generate for specific (word, cluster) pairs first
-    if target_pairs:
-        total_pairs = len(target_pairs)
-        for pair_idx, (word, cluster_title) in enumerate(target_pairs, 1):
+    # Generate for specific clusters first
+    if target_clusters:
+        total_clusters = len(target_clusters)
+        for cl_idx, cluster_title in enumerate(target_clusters, 1):
             cluster = db.get_cluster_by_title(cluster_title)
             if not cluster:
                 continue
             cw = db.get_cluster_words(cluster["id"])
-            word_info = next((w for w in cw if w["word"].lower() == word.lower()), None)
-            if not word_info:
+            if len(cw) < 4:
                 continue
-            _log.info("[%d/%d] Generating for '%s'", pair_idx, total_pairs, cluster_title)
+            word_info = _pick_target_in_cluster(db, cluster_title, cw)
+            _log.info("[%d/%d] Generating for '%s' (target: %s)",
+                      cl_idx, total_clusters, cluster_title, word_info["word"])
             q = await generate_question(llm, db, cluster=cluster, target_word_info=word_info)
             if q:
                 db.save_question(q)
                 questions.append(q)
             else:
-                _log.warning("[%d/%d] Failed for '%s' in '%s'", pair_idx, total_pairs, word, cluster_title)
+                _log.warning("[%d/%d] Failed for '%s'", cl_idx, total_clusters, cluster_title)
 
     if target_words:
         # Generate questions for specific words (legacy)
@@ -575,7 +605,7 @@ async def generate_batch(
                     break
             if len(questions) >= count:
                 break
-    elif not target_pairs:
+    elif not target_clusters:
         # Generate random questions (only if no targeted generation)
         for i in range(count):
             q = await generate_question(llm, db)

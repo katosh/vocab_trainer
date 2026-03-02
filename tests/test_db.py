@@ -136,16 +136,15 @@ class TestQuestions:
         assert populated_db.get_ready_question_count() == 0
 
 
-class TestWordProgress:
-    """Tests for the word_progress SRS table."""
+class TestClusterProgress:
+    """Tests for the cluster_progress SRS table."""
 
-    def test_new_word_no_progress(self, populated_db):
-        r = populated_db.get_word_progress("perspicacious", "")
+    def test_new_cluster_no_progress(self, populated_db):
+        r = populated_db.get_cluster_progress("Being Brief")
         assert r is None
 
     def test_upsert_creates_progress(self, populated_db):
-        populated_db.upsert_word_progress(
-            word="concise",
+        populated_db.upsert_cluster_progress(
             cluster_title="Being Brief",
             easiness_factor=2.5,
             interval_days=1.0,
@@ -153,144 +152,137 @@ class TestWordProgress:
             next_review="2026-02-19T00:00:00+00:00",
             correct=True,
         )
-        r = populated_db.get_word_progress("concise", "Being Brief")
+        r = populated_db.get_cluster_progress("Being Brief")
         assert r is not None
         assert r["easiness_factor"] == 2.5
         assert r["total_correct"] == 1
         assert r["total_incorrect"] == 0
 
     def test_upsert_updates_progress(self, populated_db):
-        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
-        populated_db.upsert_word_progress("concise", "Being Brief", 2.6, 6.0, 2, "2026-02-25T00:00:00+00:00", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.6, 6.0, 2, "2026-02-25T00:00:00+00:00", True)
 
-        r = populated_db.get_word_progress("concise", "Being Brief")
+        r = populated_db.get_cluster_progress("Being Brief")
         assert r["easiness_factor"] == 2.6
         assert r["interval_days"] == 6.0
         assert r["total_correct"] == 2
 
     def test_upsert_incorrect(self, populated_db):
-        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 0, "2026-02-19T00:00:00+00:00", False)
-        r = populated_db.get_word_progress("concise", "Being Brief")
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 0, "2026-02-19T00:00:00+00:00", False)
+        r = populated_db.get_cluster_progress("Being Brief")
         assert r["total_incorrect"] == 1
         assert r["total_correct"] == 0
 
-    def test_set_word_archived(self, populated_db):
-        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
-        populated_db.set_word_archived("concise", "Being Brief", True)
-        r = populated_db.get_word_progress("concise", "Being Brief")
+    def test_set_cluster_archived(self, populated_db):
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
+        populated_db.set_cluster_archived("Being Brief", True)
+        r = populated_db.get_cluster_progress("Being Brief")
         assert r["archived"] == 1
 
     def test_archived_excludes_from_active(self, populated_db):
-        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
-        assert populated_db.get_active_word_count() == 1
-        populated_db.set_word_archived("concise", "Being Brief", True)
-        assert populated_db.get_active_word_count() == 0
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-19T00:00:00+00:00", True)
+        assert populated_db.get_active_cluster_count() == 1
+        populated_db.set_cluster_archived("Being Brief", True)
+        assert populated_db.get_active_cluster_count() == 0
 
 
 class TestArchival:
-    """Tests for word-cluster-level archival via word_progress."""
+    """Tests for cluster-level archival via cluster_progress."""
 
     def test_archive_shows_in_archived_list(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
-        populated_db.set_word_archived("terse", "Being Brief", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
+        populated_db.set_cluster_archived("Being Brief", True)
 
-        archived = populated_db.get_archived_questions()
+        archived = populated_db.get_archived_clusters()
         assert len(archived) == 1
-        assert archived[0]["target_word"] == "terse"
+        assert archived[0]["cluster_title"] == "Being Brief"
 
     def test_restore_returns_to_active(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 6.0, 2, "2020-01-01T00:00:00+00:00", True)
-        populated_db.set_word_archived("terse", "Being Brief", True)
-        populated_db.set_word_archived("terse", "Being Brief", False)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 6.0, 2, "2020-01-01T00:00:00+00:00", True)
+        populated_db.set_cluster_archived("Being Brief", True)
+        populated_db.set_cluster_archived("Being Brief", False)
 
-        active = populated_db.get_active_questions()
+        active = populated_db.get_active_clusters()
         assert len(active) == 1
-        assert active[0]["target_word"] == "terse"
+        assert active[0]["cluster_title"] == "Being Brief"
 
     def test_archived_excluded_from_session(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True)
-        populated_db.set_word_archived("terse", "Being Brief", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True)
+        populated_db.set_cluster_archived("Being Brief", True)
 
         session_qs = populated_db.get_session_questions(limit=10)
-        assert all(q["target_word"] != "terse" for q in session_qs)
+        assert all(q["cluster_title"] != "Being Brief" for q in session_qs)
 
 
 class TestLibraryQueries:
-    """Tests for get_active_questions, get_archived_questions, reset_word_due."""
+    """Tests for get_active_clusters, get_archived_clusters, reset_cluster_due."""
 
     def test_active_empty_when_no_progress(self, populated_db, sample_question):
-        """No word_progress entries → empty active list."""
+        """No cluster_progress entries → empty active list."""
         populated_db.save_question(sample_question)
-        assert len(populated_db.get_active_questions()) == 0
+        assert len(populated_db.get_active_clusters()) == 0
 
     def test_active_appears_after_progress(self, populated_db, sample_question):
-        """Word-clusters with progress appear in active list."""
+        """Clusters with progress appear in active list."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
 
-        active = populated_db.get_active_questions()
+        active = populated_db.get_active_clusters()
         assert len(active) == 1
-        assert active[0]["target_word"] == "terse"
+        assert active[0]["cluster_title"] == "Being Brief"
         assert active[0]["interval_days"] == 1.0
         assert active[0]["next_review"] is not None
 
-    def test_archived_questions_empty_initially(self, populated_db, sample_question):
+    def test_archived_clusters_empty_initially(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
-        assert len(populated_db.get_archived_questions()) == 0
+        assert len(populated_db.get_archived_clusters()) == 0
 
-    def test_reset_word_due(self, populated_db, sample_question):
-        """reset_word_due sets next_review to now and interval to 1."""
+    def test_reset_cluster_due(self, populated_db, sample_question):
+        """reset_cluster_due sets next_review to now and interval to 1."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
-        populated_db.reset_word_due("terse", "Being Brief")
-        r = populated_db.get_word_progress("terse", "Being Brief")
+        populated_db.upsert_cluster_progress("Being Brief", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
+        populated_db.reset_cluster_due("Being Brief")
+        r = populated_db.get_cluster_progress("Being Brief")
         assert r["interval_days"] == 1.0
         assert r["repetitions"] == 0
-
-    def test_reset_word_due_case_insensitive(self, populated_db, sample_question):
-        populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 10.0, 3, "2099-01-01T00:00:00+00:00", True)
-        populated_db.reset_word_due("TERSE", "Being Brief")
-        r = populated_db.get_word_progress("terse", "Being Brief")
-        assert r["interval_days"] == 1.0
 
 
 class TestQuestionPools:
     """Tests for review/new question pool queries."""
 
     def test_get_review_questions_due(self, populated_db, sample_question):
-        """Ready questions for due word-clusters appear in review pool."""
+        """Ready questions for due clusters appear in review pool."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress(
-            "terse", "Being Brief", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True
+        populated_db.upsert_cluster_progress(
+            "Being Brief", 2.5, 1.0, 1, "2020-01-01T00:00:00+00:00", True
         )
         review_qs = populated_db.get_review_questions(limit=10)
         assert len(review_qs) == 1
         assert review_qs[0]["id"] == "test-q-001"
 
     def test_get_review_questions_not_due(self, populated_db, sample_question):
-        """Questions for not-yet-due word-clusters don't appear in review pool."""
+        """Questions for not-yet-due clusters don't appear in review pool."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress(
-            "terse", "Being Brief", 2.5, 1.0, 1, "2099-01-01T00:00:00+00:00", True
+        populated_db.upsert_cluster_progress(
+            "Being Brief", 2.5, 1.0, 1, "2099-01-01T00:00:00+00:00", True
         )
         review_qs = populated_db.get_review_questions(limit=10)
         assert len(review_qs) == 0
 
     def test_get_new_questions(self, populated_db, sample_question):
-        """Ready questions with no word_progress appear in new pool."""
+        """Ready questions with no cluster_progress appear in new pool."""
         populated_db.save_question(sample_question)
         new_qs = populated_db.get_new_questions(limit=10)
         assert len(new_qs) == 1
         assert new_qs[0]["id"] == "test-q-001"
 
     def test_get_new_questions_excludes_progressed(self, populated_db, sample_question):
-        """Questions for word-clusters with progress don't appear in new pool."""
+        """Questions for clusters with progress don't appear in new pool."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
         new_qs = populated_db.get_new_questions(limit=10)
         assert len(new_qs) == 0
 
@@ -301,11 +293,11 @@ class TestQuestionPools:
         session_qs = populated_db.get_session_questions(limit=10)
         assert len(session_qs) == 0
 
-    def test_active_word_count(self, populated_db, sample_question):
+    def test_active_cluster_count(self, populated_db, sample_question):
         populated_db.save_question(sample_question)
-        assert populated_db.get_active_word_count() == 0
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
-        assert populated_db.get_active_word_count() == 1
+        assert populated_db.get_active_cluster_count() == 0
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        assert populated_db.get_active_cluster_count() == 1
 
     def test_ready_count(self, populated_db, sample_question):
         """Ready count reflects unanswered questions."""
@@ -315,76 +307,129 @@ class TestQuestionPools:
         assert populated_db.get_ready_question_count() == 0
 
 
-class TestWordClusterQuestionCounts:
-    def test_returns_all_cluster_words(self, populated_db):
-        """Returns a row for every word in clusters with >= 4 words."""
-        pairs = populated_db.get_word_cluster_question_counts()
-        words = {p["word"] for p in pairs}
-        assert "terse" in words
-        assert "concise" in words
-        assert len(pairs) == 6
+class TestClusterQuestionCounts:
+    def test_returns_all_clusters(self, populated_db):
+        """Returns a row for every cluster with >= 4 words."""
+        clusters = populated_db.get_cluster_question_counts()
+        titles = {c["cluster_title"] for c in clusters}
+        assert "Being Brief" in titles
+        assert len(clusters) == 1  # one cluster
 
     def test_counts_ready_questions(self, populated_db, sample_question):
         """Question count reflects only unanswered questions."""
         populated_db.save_question(sample_question)
-        pairs = populated_db.get_word_cluster_question_counts()
-        terse = next(p for p in pairs if p["word"] == "terse")
-        concise = next(p for p in pairs if p["word"] == "concise")
-        assert terse["question_count"] == 1
-        assert concise["question_count"] == 0
+        clusters = populated_db.get_cluster_question_counts()
+        bb = next(c for c in clusters if c["cluster_title"] == "Being Brief")
+        assert bb["question_count"] == 1
 
     def test_answered_excluded_from_count(self, populated_db, sample_question):
         """Answered questions don't count as ready."""
         populated_db.save_question(sample_question)
         populated_db.mark_question_answered("test-q-001", 0, True)
-        pairs = populated_db.get_word_cluster_question_counts()
-        terse = next(p for p in pairs if p["word"] == "terse")
-        assert terse["question_count"] == 0
+        clusters = populated_db.get_cluster_question_counts()
+        bb = next(c for c in clusters if c["cluster_title"] == "Being Brief")
+        assert bb["question_count"] == 0
 
     def test_archived_excluded(self, populated_db, sample_question):
-        """Archived word-clusters are excluded."""
+        """Archived clusters are excluded."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
-        populated_db.set_word_archived("terse", "Being Brief", True)
-        pairs = populated_db.get_word_cluster_question_counts()
-        terse_rows = [p for p in pairs if p["word"] == "terse"]
-        assert len(terse_rows) == 0
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.set_cluster_archived("Being Brief", True)
+        clusters = populated_db.get_cluster_question_counts()
+        bb_rows = [c for c in clusters if c["cluster_title"] == "Being Brief"]
+        assert len(bb_rows) == 0
 
     def test_empty_db(self, tmp_db):
-        assert tmp_db.get_word_cluster_question_counts() == []
+        assert tmp_db.get_cluster_question_counts() == []
 
 
-class TestWordClustersNeedingQuestions:
+class TestClustersNeedingQuestions:
     def test_active_with_no_ready_question(self, populated_db, sample_question):
-        """Active word-clusters with no unanswered question need questions."""
+        """Active clusters with no unanswered question need questions."""
         populated_db.save_question(sample_question)
-        # Create progress for terse, answer the question
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        # Create progress for Being Brief, answer the question
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
         populated_db.mark_question_answered("test-q-001", 0, True)
 
-        needing = populated_db.get_word_clusters_needing_questions()
-        words = {n["word"] for n in needing}
-        assert "terse" in words
+        needing = populated_db.get_clusters_needing_questions()
+        titles = {n["cluster_title"] for n in needing}
+        assert "Being Brief" in titles
 
     def test_active_with_ready_question(self, populated_db, sample_question):
-        """Active word-clusters with a ready question don't need generation."""
+        """Active clusters with a ready question don't need generation."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
 
-        needing = populated_db.get_word_clusters_needing_questions()
-        words = {n["word"] for n in needing}
-        assert "terse" not in words
+        needing = populated_db.get_clusters_needing_questions()
+        titles = {n["cluster_title"] for n in needing}
+        assert "Being Brief" not in titles
 
     def test_archived_excluded(self, populated_db, sample_question):
-        """Archived word-clusters don't need questions."""
+        """Archived clusters don't need questions."""
         populated_db.save_question(sample_question)
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
         populated_db.mark_question_answered("test-q-001", 0, True)
-        populated_db.set_word_archived("terse", "Being Brief", True)
+        populated_db.set_cluster_archived("Being Brief", True)
 
-        needing = populated_db.get_word_clusters_needing_questions()
-        words = {n["word"] for n in needing}
-        assert "terse" not in words
+        needing = populated_db.get_clusters_needing_questions()
+        titles = {n["cluster_title"] for n in needing}
+        assert "Being Brief" not in titles
+
+
+class TestClusterWordAccuracy:
+    def test_no_history(self, populated_db):
+        """No answered questions → empty accuracy."""
+        acc = populated_db.get_cluster_word_accuracy("Being Brief")
+        assert acc == []
+
+    def test_with_answered_questions(self, populated_db, sample_question):
+        """Accuracy reflects answered questions per word."""
+        populated_db.save_question(sample_question)
+        populated_db.mark_question_answered("test-q-001", 0, True)
+        acc = populated_db.get_cluster_word_accuracy("Being Brief")
+        assert len(acc) == 1
+        assert acc[0]["word"] == "terse"
+        assert acc[0]["total"] == 1
+        assert acc[0]["correct"] == 1
+
+
+class TestMigration:
+    def test_word_progress_migration(self, tmp_path):
+        """Old word_progress data is migrated to cluster_progress."""
+        db_path = tmp_path / "migrate.db"
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        # Create old schema with word_progress
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS words (word TEXT PRIMARY KEY, definition TEXT, section TEXT, source_file TEXT);
+            CREATE TABLE IF NOT EXISTS clusters (id INTEGER PRIMARY KEY, title TEXT UNIQUE, preamble TEXT, commentary TEXT, source_file TEXT);
+            CREATE TABLE IF NOT EXISTS cluster_words (cluster_id INTEGER, word TEXT, meaning TEXT, distinction TEXT, PRIMARY KEY (cluster_id, word));
+            CREATE TABLE IF NOT EXISTS questions (id TEXT PRIMARY KEY, question_type TEXT, target_word TEXT, stem TEXT, choices_json TEXT, correct_index INTEGER, explanation TEXT, context_sentence TEXT, cluster_title TEXT, llm_provider TEXT, generated_at TEXT, choice_details_json TEXT DEFAULT '[]', answered_at TEXT, chosen_index INTEGER, was_correct INTEGER, response_time_ms INTEGER, session_id INTEGER);
+            CREATE TABLE IF NOT EXISTS word_progress (word TEXT NOT NULL, cluster_title TEXT NOT NULL, archived INTEGER DEFAULT 0, easiness_factor REAL DEFAULT 2.5, interval_days REAL DEFAULT 1.0, repetitions INTEGER DEFAULT 0, next_review TEXT, last_review TEXT, total_correct INTEGER DEFAULT 0, total_incorrect INTEGER DEFAULT 0, PRIMARY KEY (word, cluster_title));
+            CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, started_at TEXT, ended_at TEXT, questions_total INTEGER DEFAULT 0, questions_correct INTEGER DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS audio_cache (sentence_hash TEXT PRIMARY KEY, file_path TEXT, tts_provider TEXT, created_at TEXT);
+            CREATE TABLE IF NOT EXISTS file_mtimes (file_path TEXT PRIMARY KEY, mtime_ns INTEGER);
+        """)
+        # Insert old data
+        conn.execute("INSERT INTO word_progress VALUES ('concise', 'Being Brief', 0, 2.3, 6.0, 3, '2026-03-01T00:00:00+00:00', '2026-02-28T00:00:00+00:00', 5, 2)")
+        conn.execute("INSERT INTO word_progress VALUES ('terse', 'Being Brief', 0, 2.5, 10.0, 4, '2026-03-05T00:00:00+00:00', '2026-02-28T00:00:00+00:00', 3, 1)")
+        conn.commit()
+        conn.close()
+
+        # Open with Database class (triggers migration)
+        db = Database(db_path)
+        cp = db.get_cluster_progress("Being Brief")
+        assert cp is not None
+        # Pessimistic: MIN EF, MIN interval, MIN reps
+        assert cp["easiness_factor"] == 2.3
+        assert cp["interval_days"] == 6.0
+        assert cp["repetitions"] == 3
+        # Earliest next_review
+        assert cp["next_review"] == "2026-03-01T00:00:00+00:00"
+        # Summed totals
+        assert cp["total_correct"] == 8
+        assert cp["total_incorrect"] == 3
+        db.close()
 
 
 class TestSessions:
@@ -422,16 +467,16 @@ class TestStats:
         stats = populated_db.get_stats()
         assert stats["total_words"] > 0
         assert stats["total_clusters"] == 1
-        assert stats["words_new"] == stats["total_words"]
+        assert stats["clusters_new"] == stats["total_clusters"]
 
-    def test_stats_with_word_progress(self, populated_db):
-        """Stats accuracy comes from word_progress."""
+    def test_stats_with_cluster_progress(self, populated_db):
+        """Stats accuracy comes from cluster_progress."""
         from datetime import datetime, timezone
         next_rev = datetime.now(timezone.utc).isoformat()
         for i in range(7):
-            populated_db.upsert_word_progress(f"word{i}", "cluster", 2.5, 1.0, 1, next_rev, correct=True)
+            populated_db.upsert_cluster_progress(f"cluster{i}", 2.5, 1.0, 1, next_rev, correct=True)
         for i in range(3):
-            populated_db.upsert_word_progress(f"wrong{i}", "cluster", 2.5, 1.0, 0, next_rev, correct=False)
+            populated_db.upsert_cluster_progress(f"wrong{i}", 2.5, 1.0, 0, next_rev, correct=False)
         stats = populated_db.get_stats()
         assert stats["total_questions_answered"] == 10
         assert stats["accuracy"] == 70.0

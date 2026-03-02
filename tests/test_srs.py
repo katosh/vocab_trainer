@@ -102,100 +102,100 @@ class TestQualityFromAnswer:
 
 
 class TestRecordReview:
-    """Tests for record_review with (word, cluster_title) pairs."""
+    """Tests for record_review with cluster_title only."""
 
     def test_first_review_correct(self, populated_db):
-        result = record_review(populated_db, "concise", "Being Brief", quality=4)
-        wp = populated_db.get_word_progress("concise", "Being Brief")
-        assert wp is not None
-        assert wp["repetitions"] == 1
-        assert wp["total_correct"] == 1
+        result = record_review(populated_db, "Being Brief", quality=4)
+        cp = populated_db.get_cluster_progress("Being Brief")
+        assert cp is not None
+        assert cp["repetitions"] == 1
+        assert cp["total_correct"] == 1
         assert result["archived"] is False
 
     def test_first_review_wrong(self, populated_db):
-        result = record_review(populated_db, "concise", "Being Brief", quality=1)
-        wp = populated_db.get_word_progress("concise", "Being Brief")
-        assert wp["repetitions"] == 0
-        assert wp["total_incorrect"] == 1
+        result = record_review(populated_db, "Being Brief", quality=1)
+        cp = populated_db.get_cluster_progress("Being Brief")
+        assert cp["repetitions"] == 0
+        assert cp["total_incorrect"] == 1
 
     def test_multiple_reviews(self, populated_db):
-        record_review(populated_db, "concise", "Being Brief", quality=4)
-        record_review(populated_db, "concise", "Being Brief", quality=5)
-        wp = populated_db.get_word_progress("concise", "Being Brief")
-        assert wp["repetitions"] == 2
-        assert wp["total_correct"] == 2
+        record_review(populated_db, "Being Brief", quality=4)
+        record_review(populated_db, "Being Brief", quality=5)
+        cp = populated_db.get_cluster_progress("Being Brief")
+        assert cp["repetitions"] == 2
+        assert cp["total_correct"] == 2
 
     def test_failure_after_success_resets_reps(self, populated_db):
-        record_review(populated_db, "concise", "Being Brief", quality=4)
-        record_review(populated_db, "concise", "Being Brief", quality=4)
-        record_review(populated_db, "concise", "Being Brief", quality=1)  # fail
-        wp = populated_db.get_word_progress("concise", "Being Brief")
-        assert wp["repetitions"] == 0
-        assert wp["interval_days"] == 1.0
+        record_review(populated_db, "Being Brief", quality=4)
+        record_review(populated_db, "Being Brief", quality=4)
+        record_review(populated_db, "Being Brief", quality=1)  # fail
+        cp = populated_db.get_cluster_progress("Being Brief")
+        assert cp["repetitions"] == 0
+        assert cp["interval_days"] == 1.0
 
     def test_archive_when_interval_reached(self, populated_db):
-        """Word-cluster archives when SRS interval >= threshold after correct answer."""
+        """Cluster archives when SRS interval >= threshold after correct answer."""
         # Set up high interval
-        populated_db.upsert_word_progress(
-            "terse", "Being Brief", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True
+        populated_db.upsert_cluster_progress(
+            "Being Brief", 2.6, 50.0, 5, "2020-01-01T00:00:00+00:00", True
         )
         result = record_review(
-            populated_db, "terse", "Being Brief", quality=5,
-            archive_interval_days=21,
+            populated_db, "Being Brief", quality=5,
+            archive_interval_days=45,
         )
         assert result["archived"] is True
         assert "Mastered" in result["reason"]
 
-        wp = populated_db.get_word_progress("terse", "Being Brief")
-        assert wp["archived"] == 1
+        cp = populated_db.get_cluster_progress("Being Brief")
+        assert cp["archived"] == 1
 
     def test_no_archive_below_threshold(self, populated_db):
-        """Word-cluster with short interval stays in rotation."""
+        """Cluster with short interval stays in rotation."""
         # Use a recent next_review so overdue credit doesn't inflate past threshold
         now = datetime.now(timezone.utc).isoformat()
-        populated_db.upsert_word_progress(
-            "terse", "Being Brief", 2.5, 6.0, 2, now, True
+        populated_db.upsert_cluster_progress(
+            "Being Brief", 2.5, 6.0, 2, now, True
         )
         result = record_review(
-            populated_db, "terse", "Being Brief", quality=4,
-            archive_interval_days=21,
+            populated_db, "Being Brief", quality=4,
+            archive_interval_days=45,
         )
         assert result["archived"] is False
 
     def test_no_archive_on_wrong(self, populated_db):
         """Wrong answer never archives, even with high interval."""
-        populated_db.upsert_word_progress(
-            "terse", "Being Brief", 2.6, 30.0, 5, "2020-01-01T00:00:00+00:00", True
+        populated_db.upsert_cluster_progress(
+            "Being Brief", 2.6, 60.0, 5, "2020-01-01T00:00:00+00:00", True
         )
         result = record_review(
-            populated_db, "terse", "Being Brief", quality=1,
-            archive_interval_days=21,
+            populated_db, "Being Brief", quality=1,
+            archive_interval_days=45,
         )
         assert result["archived"] is False
 
     def test_overdue_correct_gets_credit(self, populated_db):
-        """A correct answer on an overdue word-cluster gets a longer interval."""
+        """A correct answer on an overdue cluster gets a longer interval."""
         ten_days_ago = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 6.0, 2, ten_days_ago, True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 6.0, 2, ten_days_ago, True)
 
-        record_review(populated_db, "concise", "Being Brief", quality=4)
-        overdue = populated_db.get_word_progress("concise", "Being Brief")
+        record_review(populated_db, "Being Brief", quality=4)
+        overdue = populated_db.get_cluster_progress("Being Brief")
 
-        # Set up a fresh review for another word, due right now, same interval
+        # Set up a fresh review for another cluster, due right now, same interval
         now = datetime.now(timezone.utc).isoformat()
-        populated_db.upsert_word_progress("terse", "Being Brief", 2.5, 6.0, 2, now, True)
-        record_review(populated_db, "terse", "Being Brief", quality=4)
-        ontime = populated_db.get_word_progress("terse", "Being Brief")
+        populated_db.upsert_cluster_progress("Other Cluster", 2.5, 6.0, 2, now, True)
+        record_review(populated_db, "Other Cluster", quality=4)
+        ontime = populated_db.get_cluster_progress("Other Cluster")
 
-        # Overdue word should get a longer interval
+        # Overdue cluster should get a longer interval
         assert overdue["interval_days"] > ontime["interval_days"]
 
     def test_overdue_wrong_no_credit(self, populated_db):
-        """A wrong answer on an overdue word still resets to 1 day."""
+        """A wrong answer on an overdue cluster still resets to 1 day."""
         ten_days_ago = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-        populated_db.upsert_word_progress("concise", "Being Brief", 2.5, 6.0, 2, ten_days_ago, True)
+        populated_db.upsert_cluster_progress("Being Brief", 2.5, 6.0, 2, ten_days_ago, True)
 
-        record_review(populated_db, "concise", "Being Brief", quality=1)
-        wp = populated_db.get_word_progress("concise", "Being Brief")
-        assert wp["interval_days"] == 1.0
-        assert wp["repetitions"] == 0
+        record_review(populated_db, "Being Brief", quality=1)
+        cp = populated_db.get_cluster_progress("Being Brief")
+        assert cp["interval_days"] == 1.0
+        assert cp["repetitions"] == 0

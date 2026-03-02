@@ -17,7 +17,7 @@ DEFAULTS = {
     "audio_cache_dir": "audio_cache",
     "db_path": "progress.db",
     "ollama_url": "http://localhost:11434",
-    "archive_interval_days": 21,
+    "archive_interval_days": 45,
     "llm_thinking": False,
     "auto_narrate": True,
     "context_level": "simple",

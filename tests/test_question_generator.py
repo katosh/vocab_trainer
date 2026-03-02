@@ -9,8 +9,9 @@ from vocab_trainer.question_generator import (
     _enrich_choices,
     _extract_json,
     _fix_article_before_blank,
+    _pick_cluster_and_target,
     _pick_question_type,
-    _pick_word_cluster,
+    _pick_target_in_cluster,
     _validate_grammar,
     _validate_question,
     generate_question,
@@ -217,9 +218,9 @@ class TestPickQuestionType:
             assert qtype in ("fill_blank", "best_fit", "distinction")
 
 
-class TestPickWordCluster:
+class TestPickClusterAndTarget:
     def test_returns_valid_pair(self, populated_db):
-        result = _pick_word_cluster(populated_db)
+        result = _pick_cluster_and_target(populated_db)
         assert result is not None
         cluster, word_info = result
         assert "title" in cluster
@@ -227,44 +228,50 @@ class TestPickWordCluster:
         assert "meaning" in word_info
 
     def test_returns_none_with_no_clusters(self, tmp_db):
-        assert _pick_word_cluster(tmp_db) is None
+        assert _pick_cluster_and_target(tmp_db) is None
 
-    def test_favors_uncovered_words(self, populated_db):
-        """Words with no existing questions should be chosen much more often
-        than words that already have several questions."""
-        from vocab_trainer.models import Question
-        import uuid
+    def test_picks_different_targets(self, populated_db):
+        """Multiple calls should eventually pick different target words."""
+        words_seen = set()
+        for _ in range(50):
+            result = _pick_cluster_and_target(populated_db)
+            assert result is not None
+            _, word_info = result
+            words_seen.add(word_info["word"])
+        # Should see at least 2 different words
+        assert len(words_seen) >= 2
 
-        # Give "terse" 10 banked questions in the "Being Brief" cluster
-        for _ in range(10):
-            populated_db.save_question(Question(
-                id=str(uuid.uuid4()),
-                question_type="fill_blank",
-                stem="A ___ reply.",
-                choices=["terse", "concise", "pithy", "laconic"],
-                correct_index=0,
-                correct_word="terse",
-                explanation="test",
-                context_sentence="A terse reply.",
-                cluster_title="Being Brief",
-                llm_provider="test",
-            ))
 
-        # Sample many times and count how often "terse" is picked
+class TestPickTargetInCluster:
+    def test_picks_from_cluster_words(self, populated_db):
+        cluster = populated_db.get_cluster_by_title("Being Brief")
+        cw = populated_db.get_cluster_words(cluster["id"])
+        word_info = _pick_target_in_cluster(populated_db, "Being Brief", cw)
+        assert word_info["word"] in {w["word"] for w in cw}
+        assert "meaning" in word_info
+        assert "distinction" in word_info
+
+    def test_favors_untested_words(self, populated_db, sample_question):
+        """Never-tested words should be picked more often."""
+        # Give "terse" a history of correct answers
+        populated_db.save_question(sample_question)
+        populated_db.mark_question_answered("test-q-001", 0, True)
+
+        cluster = populated_db.get_cluster_by_title("Being Brief")
+        cw = populated_db.get_cluster_words(cluster["id"])
+
         terse_count = 0
         n = 200
         for _ in range(n):
-            result = _pick_word_cluster(populated_db)
-            assert result is not None
-            _, word_info = result
+            word_info = _pick_target_in_cluster(populated_db, "Being Brief", cw)
             if word_info["word"] == "terse":
                 terse_count += 1
 
-        # "terse" has weight 1/(1+10) = 0.091, other 5 words have 1/(1+0) = 1.0 each
-        # Expected terse fraction ≈ 0.091 / (5*1.0 + 0.091) ≈ 1.8%
-        # It should be picked much less than uniform (1/6 ≈ 16.7%)
-        assert terse_count < n * 0.08, (
-            f"terse picked {terse_count}/{n} times — weighting not working"
+        # "terse" has 100% accuracy → weight 1.0, untested words → weight 2.0
+        # Expected terse fraction ≈ 1.0 / (5*2.0 + 1.0) ≈ 9.1%
+        # Uniform would be 1/6 ≈ 16.7%
+        assert terse_count < n * 0.20, (
+            f"terse picked {terse_count}/{n} times — should be less frequent than untested words"
         )
 
 

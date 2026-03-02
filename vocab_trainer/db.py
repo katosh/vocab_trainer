@@ -55,9 +55,8 @@ CREATE TABLE IF NOT EXISTS questions (
     session_id INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS word_progress (
-    word TEXT NOT NULL,
-    cluster_title TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS cluster_progress (
+    cluster_title TEXT PRIMARY KEY,
     archived INTEGER DEFAULT 0,
     easiness_factor REAL DEFAULT 2.5,
     interval_days REAL DEFAULT 1.0,
@@ -65,8 +64,7 @@ CREATE TABLE IF NOT EXISTS word_progress (
     next_review TEXT,
     last_review TEXT,
     total_correct INTEGER DEFAULT 0,
-    total_incorrect INTEGER DEFAULT 0,
-    PRIMARY KEY (word, cluster_title)
+    total_incorrect INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -117,7 +115,48 @@ class Database:
             self.conn.execute("ALTER TABLE questions ADD COLUMN quality_issue TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Migrate word_progress → cluster_progress (pessimistic merge)
+        self._migrate_word_progress_to_cluster()
         self.conn.commit()
+
+    def _migrate_word_progress_to_cluster(self) -> None:
+        """One-time migration: merge word_progress rows into cluster_progress.
+
+        Groups by cluster_title and takes the pessimistic (weakest) values:
+        MIN easiness_factor, MIN interval_days, MIN repetitions, earliest next_review.
+        The old word_progress table is left intact for rollback safety.
+        """
+        # Check if old table exists
+        has_old = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='word_progress'"
+        ).fetchone()
+        if not has_old:
+            return
+        # Check if we already migrated (cluster_progress has data)
+        cp_count = self.conn.execute("SELECT COUNT(*) FROM cluster_progress").fetchone()[0]
+        if cp_count > 0:
+            return
+        # Check if there's actually data to migrate
+        wp_count = self.conn.execute("SELECT COUNT(*) FROM word_progress").fetchone()[0]
+        if wp_count == 0:
+            return
+        self.conn.execute("""
+            INSERT INTO cluster_progress
+                (cluster_title, archived, easiness_factor, interval_days, repetitions,
+                 next_review, last_review, total_correct, total_incorrect)
+            SELECT
+                cluster_title,
+                MAX(archived),
+                MIN(easiness_factor),
+                MIN(interval_days),
+                MIN(repetitions),
+                MIN(next_review),
+                MAX(last_review),
+                SUM(total_correct),
+                SUM(total_incorrect)
+            FROM word_progress
+            GROUP BY cluster_title
+        """)
 
     def close(self) -> None:
         self.conn.close()
@@ -279,9 +318,9 @@ class Database:
         return row[0]
 
     def get_archived_question_count(self) -> int:
-        """Count archived word-cluster pairs."""
+        """Count archived clusters."""
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM word_progress WHERE archived = 1"
+            "SELECT COUNT(*) FROM cluster_progress WHERE archived = 1"
         ).fetchone()
         return row[0]
 
@@ -293,39 +332,38 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_session_questions(self, limit: int = 20) -> list[dict]:
-        """Pull ready (unanswered) questions for due reviews and new words only.
+        """Pull ready (unanswered) questions for due reviews and new clusters only.
 
-        Excludes questions for archived word-clusters and word-clusters
+        Excludes questions for archived clusters and clusters
         that have been reviewed but are not yet due (SRS timing respected).
 
         Priority:
-        0. Due word-clusters (freshly due first — optimal SRS timing)
-        1. Never-reviewed word-clusters (new material)
+        0. Due clusters (freshly due first — optimal SRS timing)
+        1. Never-reviewed clusters (new material)
         """
         now = datetime.now(timezone.utc).isoformat()
         rows = self.conn.execute("""
             SELECT q.*,
                 CASE
-                    WHEN wp.word IS NOT NULL AND wp.next_review <= ?
+                    WHEN cp.cluster_title IS NOT NULL AND cp.next_review <= ?
                         THEN 0
-                    WHEN wp.word IS NULL
+                    WHEN cp.cluster_title IS NULL
                         THEN 1
                 END AS priority
             FROM questions q
-            LEFT JOIN word_progress wp
-                ON q.target_word = wp.word
-                AND COALESCE(q.cluster_title, '') = wp.cluster_title
+            LEFT JOIN cluster_progress cp
+                ON COALESCE(q.cluster_title, '') = cp.cluster_title
             WHERE q.answered_at IS NULL
               AND q.quality_issue IS NULL
-              AND (wp.archived IS NULL OR wp.archived = 0)
-              AND (wp.word IS NULL OR wp.next_review <= ?)
-            ORDER BY priority ASC, wp.next_review DESC, RANDOM()
+              AND (cp.archived IS NULL OR cp.archived = 0)
+              AND (cp.cluster_title IS NULL OR cp.next_review <= ?)
+            ORDER BY priority ASC, cp.next_review DESC, RANDOM()
             LIMIT ?
         """, (now, now, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def get_review_questions(self, limit: int = 20) -> list[dict]:
-        """Ready questions for due word-clusters.
+        """Ready questions for due clusters.
 
         Freshly-due first (optimal SRS timing), long-overdue last.
         """
@@ -333,37 +371,35 @@ class Database:
         rows = self.conn.execute("""
             SELECT q.*
             FROM questions q
-            JOIN word_progress wp
-                ON q.target_word = wp.word
-                AND COALESCE(q.cluster_title, '') = wp.cluster_title
+            JOIN cluster_progress cp
+                ON COALESCE(q.cluster_title, '') = cp.cluster_title
             WHERE q.answered_at IS NULL
               AND q.quality_issue IS NULL
-              AND wp.archived = 0
-              AND wp.next_review <= ?
-            ORDER BY wp.next_review DESC
+              AND cp.archived = 0
+              AND cp.next_review <= ?
+            ORDER BY cp.next_review DESC
             LIMIT ?
         """, (now, limit)).fetchall()
         return [dict(r) for r in rows]
 
     def get_new_questions(self, limit: int = 10) -> list[dict]:
-        """Ready questions for word-clusters with no progress entry (truly new)."""
+        """Ready questions for clusters with no progress entry (truly new)."""
         rows = self.conn.execute("""
             SELECT q.*
             FROM questions q
-            LEFT JOIN word_progress wp
-                ON q.target_word = wp.word
-                AND COALESCE(q.cluster_title, '') = wp.cluster_title
+            LEFT JOIN cluster_progress cp
+                ON COALESCE(q.cluster_title, '') = cp.cluster_title
             WHERE q.answered_at IS NULL
               AND q.quality_issue IS NULL
-              AND wp.word IS NULL
+              AND cp.cluster_title IS NULL
             ORDER BY RANDOM() LIMIT ?
         """, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
-    def get_active_word_count(self) -> int:
-        """Count distinct word-cluster pairs currently in rotation."""
+    def get_active_cluster_count(self) -> int:
+        """Count clusters currently in rotation."""
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM word_progress WHERE archived = 0"
+            "SELECT COUNT(*) FROM cluster_progress WHERE archived = 0"
         ).fetchone()
         return row[0]
 
@@ -385,65 +421,66 @@ class Database:
         )
         self.conn.commit()
 
-    def get_active_questions(self) -> list[dict]:
-        """Active (non-archived) word-cluster pairs with SRS info."""
+    def get_active_clusters(self) -> list[dict]:
+        """Active (non-archived) clusters with SRS info and per-word accuracy."""
         rows = self.conn.execute("""
-            SELECT wp.word AS target_word, wp.cluster_title,
-                   wp.total_correct + wp.total_incorrect AS times_shown,
-                   wp.total_correct AS times_correct,
-                   wp.interval_days, wp.next_review, wp.easiness_factor,
-                   wp.last_review
-            FROM word_progress wp
-            WHERE wp.archived = 0
-            ORDER BY wp.next_review ASC
+            SELECT cp.cluster_title,
+                   cp.total_correct + cp.total_incorrect AS times_shown,
+                   cp.total_correct AS times_correct,
+                   cp.interval_days, cp.next_review, cp.easiness_factor,
+                   cp.last_review
+            FROM cluster_progress cp
+            WHERE cp.archived = 0
+            ORDER BY cp.next_review ASC
         """).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            entry = dict(r)
+            entry["words"] = self.get_cluster_word_accuracy(entry["cluster_title"])
+            result.append(entry)
+        return result
 
-    def get_archived_questions(self) -> list[dict]:
-        """Archived word-cluster pairs with SRS info."""
+    def get_archived_clusters(self) -> list[dict]:
+        """Archived clusters with SRS info and per-word accuracy."""
         rows = self.conn.execute("""
-            SELECT wp.word AS target_word, wp.cluster_title,
-                   wp.total_correct + wp.total_incorrect AS times_shown,
-                   wp.total_correct AS times_correct,
-                   wp.interval_days, wp.next_review, wp.easiness_factor,
-                   wp.last_review
-            FROM word_progress wp
-            WHERE wp.archived = 1
-            ORDER BY wp.last_review DESC
+            SELECT cp.cluster_title,
+                   cp.total_correct + cp.total_incorrect AS times_shown,
+                   cp.total_correct AS times_correct,
+                   cp.interval_days, cp.next_review, cp.easiness_factor,
+                   cp.last_review
+            FROM cluster_progress cp
+            WHERE cp.archived = 1
+            ORDER BY cp.last_review DESC
         """).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            entry = dict(r)
+            entry["words"] = self.get_cluster_word_accuracy(entry["cluster_title"])
+            result.append(entry)
+        return result
 
-    def reset_word_due(self, word: str, cluster_title: str | None = None) -> None:
-        """Reset SRS for a word(-cluster) so it becomes due in 1 day (like a wrong answer)."""
+    def reset_cluster_due(self, cluster_title: str) -> None:
+        """Reset SRS for a cluster so it becomes due in 1 day (like a wrong answer)."""
         next_review = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-        if cluster_title is not None:
-            self.conn.execute(
-                "UPDATE word_progress SET next_review = ?, "
-                "interval_days = 1.0, repetitions = 0 "
-                "WHERE LOWER(word) = LOWER(?) AND cluster_title = ?",
-                (next_review, word, cluster_title),
-            )
-        else:
-            self.conn.execute(
-                "UPDATE word_progress SET next_review = ?, "
-                "interval_days = 1.0, repetitions = 0 "
-                "WHERE LOWER(word) = LOWER(?)",
-                (next_review, word),
-            )
+        self.conn.execute(
+            "UPDATE cluster_progress SET next_review = ?, "
+            "interval_days = 1.0, repetitions = 0 "
+            "WHERE cluster_title = ?",
+            (next_review, cluster_title),
+        )
         self.conn.commit()
 
-    # ── Word Progress (SRS) ───────────────────────────────────────────────
+    # ── Cluster Progress (SRS) ────────────────────────────────────────────
 
-    def get_word_progress(self, word: str, cluster_title: str) -> dict | None:
+    def get_cluster_progress(self, cluster_title: str) -> dict | None:
         row = self.conn.execute(
-            "SELECT * FROM word_progress WHERE word = ? AND cluster_title = ?",
-            (word, cluster_title),
+            "SELECT * FROM cluster_progress WHERE cluster_title = ?",
+            (cluster_title,),
         ).fetchone()
         return dict(row) if row else None
 
-    def upsert_word_progress(
+    def upsert_cluster_progress(
         self,
-        word: str,
         cluster_title: str,
         easiness_factor: float,
         interval_days: float,
@@ -452,102 +489,98 @@ class Database:
         correct: bool,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        existing = self.get_word_progress(word, cluster_title)
+        existing = self.get_cluster_progress(cluster_title)
         if existing:
             if correct:
                 self.conn.execute(
-                    "UPDATE word_progress SET easiness_factor=?, interval_days=?, "
+                    "UPDATE cluster_progress SET easiness_factor=?, interval_days=?, "
                     "repetitions=?, next_review=?, last_review=?, "
                     "total_correct=total_correct+1 "
-                    "WHERE word=? AND cluster_title=?",
+                    "WHERE cluster_title=?",
                     (easiness_factor, interval_days, repetitions, next_review, now,
-                     word, cluster_title),
+                     cluster_title),
                 )
             else:
                 self.conn.execute(
-                    "UPDATE word_progress SET easiness_factor=?, interval_days=?, "
+                    "UPDATE cluster_progress SET easiness_factor=?, interval_days=?, "
                     "repetitions=?, next_review=?, last_review=?, "
                     "total_incorrect=total_incorrect+1 "
-                    "WHERE word=? AND cluster_title=?",
+                    "WHERE cluster_title=?",
                     (easiness_factor, interval_days, repetitions, next_review, now,
-                     word, cluster_title),
+                     cluster_title),
                 )
         else:
             tc = 1 if correct else 0
             ti = 0 if correct else 1
             self.conn.execute(
-                "INSERT INTO word_progress (word, cluster_title, easiness_factor, "
+                "INSERT INTO cluster_progress (cluster_title, easiness_factor, "
                 "interval_days, repetitions, next_review, last_review, "
                 "total_correct, total_incorrect) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (word, cluster_title, easiness_factor, interval_days, repetitions,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (cluster_title, easiness_factor, interval_days, repetitions,
                  next_review, now, tc, ti),
             )
         self.conn.commit()
 
-    def set_word_archived(self, word: str, cluster_title: str, archived: bool) -> None:
-        """Archive or restore a word-cluster pair."""
+    def set_cluster_archived(self, cluster_title: str, archived: bool) -> None:
+        """Archive or restore a cluster."""
         self.conn.execute(
-            "UPDATE word_progress SET archived = ? "
-            "WHERE word = ? AND cluster_title = ?",
-            (1 if archived else 0, word, cluster_title),
+            "UPDATE cluster_progress SET archived = ? "
+            "WHERE cluster_title = ?",
+            (1 if archived else 0, cluster_title),
         )
         self.conn.commit()
 
-    def get_word_clusters_needing_questions(self) -> list[dict]:
-        """Active word-clusters that have no ready (unanswered) question.
+    def get_clusters_needing_questions(self) -> list[dict]:
+        """Active clusters that have no ready (unanswered) question.
 
-        Ordered by next_review so due words generate first.
+        Ordered by next_review so due clusters generate first.
         """
         rows = self.conn.execute("""
-            SELECT wp.word, wp.cluster_title
-            FROM word_progress wp
+            SELECT cp.cluster_title
+            FROM cluster_progress cp
             LEFT JOIN questions q
-                ON q.target_word = wp.word
-                AND COALESCE(q.cluster_title, '') = wp.cluster_title
+                ON COALESCE(q.cluster_title, '') = cp.cluster_title
                 AND q.answered_at IS NULL
                 AND q.quality_issue IS NULL
-            WHERE wp.archived = 0
+            WHERE cp.archived = 0
               AND q.id IS NULL
-            ORDER BY wp.next_review ASC
+            ORDER BY cp.next_review ASC
         """).fetchall()
         return [dict(r) for r in rows]
 
 
-    def get_new_word_clusters_with_ready_count(self) -> int:
-        """Count distinct new (no word_progress) word-clusters that have a ready question."""
+    def get_new_clusters_with_ready_count(self) -> int:
+        """Count distinct new (no cluster_progress) clusters that have a ready question."""
         row = self.conn.execute("""
-            SELECT COUNT(DISTINCT q.target_word || '|' || COALESCE(q.cluster_title, ''))
+            SELECT COUNT(DISTINCT COALESCE(q.cluster_title, ''))
             FROM questions q
-            LEFT JOIN word_progress wp
-                ON q.target_word = wp.word
-                AND COALESCE(q.cluster_title, '') = wp.cluster_title
+            LEFT JOIN cluster_progress cp
+                ON COALESCE(q.cluster_title, '') = cp.cluster_title
             WHERE q.answered_at IS NULL
               AND q.quality_issue IS NULL
-              AND wp.word IS NULL
+              AND cp.cluster_title IS NULL
               AND q.cluster_title IS NOT NULL
               AND q.cluster_title != ''
         """).fetchone()
         return row[0]
 
-    def get_new_word_clusters_without_questions(self, limit: int = 20) -> list[dict]:
-        """New word-clusters (no word_progress, not archived) that have no ready question.
+    def get_new_clusters_without_questions(self, limit: int = 20) -> list[dict]:
+        """New clusters (no cluster_progress, not archived) that have no ready question.
 
-        Only includes pairs from clusters with >= 4 words.
-        Returns (word, cluster_title) pairs for generation targeting.
+        Only includes clusters with >= 4 words.
+        Returns cluster_title values for generation targeting.
         """
         rows = self.conn.execute("""
-            SELECT cw.word, c.title AS cluster_title
-            FROM cluster_words cw
-            JOIN clusters c ON cw.cluster_id = c.id
-            LEFT JOIN word_progress wp
-                ON cw.word = wp.word AND c.title = wp.cluster_title
+            SELECT DISTINCT c.title AS cluster_title
+            FROM clusters c
+            LEFT JOIN cluster_progress cp
+                ON c.title = cp.cluster_title
             LEFT JOIN questions q
-                ON q.target_word = cw.word
-                AND q.cluster_title = c.title
+                ON q.cluster_title = c.title
                 AND q.answered_at IS NULL
                 AND q.quality_issue IS NULL
-            WHERE wp.word IS NULL
+            WHERE cp.cluster_title IS NULL
               AND q.id IS NULL
               AND c.id IN (
                   SELECT cluster_id FROM cluster_words
@@ -585,38 +618,51 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_word_cluster_question_counts(self) -> list[dict]:
-        """All (word, cluster) pairs with their ready (unanswered) question count.
+    def get_cluster_word_accuracy(self, cluster_title: str) -> list[dict]:
+        """Per-word accuracy from answered questions for a cluster.
 
-        Only includes pairs from clusters with >= 4 words (enough for 4 choices).
-        Excludes archived word-clusters.
+        Returns list of {word, total, correct} for target word weighting
+        and Library display.
         """
         rows = self.conn.execute("""
-            SELECT cw.word, cw.meaning, cw.distinction,
-                   c.id AS cluster_id, c.title AS cluster_title,
+            SELECT q.target_word AS word,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN q.was_correct = 1 THEN 1 ELSE 0 END) AS correct
+            FROM questions q
+            WHERE q.cluster_title = ?
+              AND q.answered_at IS NOT NULL
+            GROUP BY q.target_word
+        """, (cluster_title,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_cluster_question_counts(self) -> list[dict]:
+        """All clusters with their ready (unanswered) question count.
+
+        Only includes clusters with >= 4 words (enough for 4 choices).
+        Excludes archived clusters.
+        """
+        rows = self.conn.execute("""
+            SELECT c.id AS cluster_id, c.title AS cluster_title,
                    COUNT(q.id) AS question_count
-            FROM cluster_words cw
-            JOIN clusters c ON cw.cluster_id = c.id
+            FROM clusters c
             LEFT JOIN questions q
-                ON q.target_word = cw.word
-                AND q.cluster_title = c.title
+                ON q.cluster_title = c.title
                 AND q.answered_at IS NULL
                 AND q.quality_issue IS NULL
-            LEFT JOIN word_progress wp
-                ON wp.word = cw.word
-                AND wp.cluster_title = c.title
+            LEFT JOIN cluster_progress cp
+                ON cp.cluster_title = c.title
             WHERE c.id IN (
                 SELECT cluster_id FROM cluster_words
                 GROUP BY cluster_id HAVING COUNT(*) >= 4
             )
-            AND (wp.archived IS NULL OR wp.archived = 0)
-            GROUP BY cw.word, c.id
+            AND (cp.archived IS NULL OR cp.archived = 0)
+            GROUP BY c.id
         """).fetchall()
         return [dict(r) for r in rows]
 
-    def get_reviewed_word_count(self) -> int:
-        """Count of word-cluster pairs with any review history."""
-        row = self.conn.execute("SELECT COUNT(*) FROM word_progress").fetchone()
+    def get_reviewed_cluster_count(self) -> int:
+        """Count of clusters with any review history."""
+        row = self.conn.execute("SELECT COUNT(*) FROM cluster_progress").fetchone()
         return row[0]
 
     # ── Sessions ──────────────────────────────────────────────────────────
@@ -647,26 +693,26 @@ class Database:
     def get_stats(self) -> dict:
         word_count = self.get_word_count()
         cluster_count = self.get_cluster_count()
-        reviewed = self.get_reviewed_word_count()
+        reviewed = self.get_reviewed_cluster_count()
         bank = self.get_question_bank_size()
         ready = self.get_ready_question_count()
         archived = self.get_archived_question_count()
-        active = self.get_active_word_count()
+        active = self.get_active_cluster_count()
 
-        # Due word-clusters
+        # Due clusters
         now = datetime.now(timezone.utc).isoformat()
         due_row = self.conn.execute(
-            "SELECT COUNT(*) FROM word_progress "
+            "SELECT COUNT(*) FROM cluster_progress "
             "WHERE archived = 0 AND next_review <= ?",
             (now,),
         ).fetchone()
         due = due_row[0]
 
-        # Count accuracy from word_progress
+        # Count accuracy from cluster_progress
         review_stats = self.conn.execute(
             "SELECT COALESCE(SUM(total_correct),0) as correct, "
             "COALESCE(SUM(total_correct + total_incorrect),0) as total "
-            "FROM word_progress"
+            "FROM cluster_progress"
         ).fetchone()
 
         sessions = self.conn.execute(
@@ -679,13 +725,13 @@ class Database:
         return {
             "total_words": word_count,
             "total_clusters": cluster_count,
-            "words_reviewed": reviewed,
-            "words_due": due,
-            "words_new": word_count - reviewed,
+            "clusters_reviewed": reviewed,
+            "clusters_due": due,
+            "clusters_new": cluster_count - reviewed,
             "question_bank_size": bank,
             "questions_ready": ready,
-            "questions_archived": archived,
-            "active_words": active,
+            "clusters_archived": archived,
+            "clusters_active": active,
             "new_questions": ready,
             "total_sessions": sessions["cnt"],
             "total_questions_answered": total_answered,

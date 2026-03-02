@@ -255,13 +255,13 @@ class TestSessionAPI:
             "correct_word": "terse",
         }
         app_module._active_sessions[session_id] = {
-            "questions": [{"id": "q1", "target_word": "terse"}],
+            "questions": [{"id": "q1", "target_word": "terse", "cluster_title": "Being Brief"}],
             "current_index": 0,
             "total": 0,
             "correct": 0,
             "target": 1,
             "seen_ids": {"q1"},
-            "seen_pairs": {("terse", "being brief")},
+            "seen_clusters": {"being brief"},
             "current_question": current_q,
             "question_answered": False,
         }
@@ -280,13 +280,13 @@ class TestSessionAPI:
         client, db, settings = test_app_with_data
         session_id = db.start_session()
         app_module._active_sessions[session_id] = {
-            "questions": [{"id": "q1", "target_word": "terse"}],
+            "questions": [{"id": "q1", "target_word": "terse", "cluster_title": "Being Brief"}],
             "current_index": 1,
             "total": 1,
             "correct": 1,
             "target": 1,
             "seen_ids": {"q1"},
-            "seen_pairs": {("terse", "being brief")},
+            "seen_clusters": {"being brief"},
             "current_question": {"stem": "old"},
             "question_answered": True,
         }
@@ -344,7 +344,7 @@ class TestFullSessionFlow:
             "new_count": 0,
             "target": 1,
             "seen_ids": {"test-q-001"},
-            "seen_pairs": {("terse", "being brief")},
+            "seen_clusters": {"being brief"},
             "question_answered": False,
             "current_question": {
                 **q_data,
@@ -373,10 +373,10 @@ class TestFullSessionFlow:
         assert data["session_complete"] is True
         assert data["summary"]["accuracy"] == 100.0
 
-        # Should have created word_progress entry
-        wp = db.get_word_progress("terse", "Being Brief")
-        assert wp is not None
-        assert wp["total_correct"] == 1
+        # Should have created cluster_progress entry
+        cp = db.get_cluster_progress("Being Brief")
+        assert cp is not None
+        assert cp["total_correct"] == 1
 
     def test_answer_wrong(self, test_app_with_data):
         client, db, settings = test_app_with_data
@@ -422,11 +422,11 @@ class TestFullSessionFlow:
         assert len(answered) >= 1
 
     def test_answer_includes_archive_info(self, test_app_with_data):
-        """Answer response includes archive info with word+cluster."""
+        """Answer response includes archive info with cluster_title."""
         client, db, settings = test_app_with_data
-        settings.archive_interval_days = 21
+        settings.archive_interval_days = 45
         # Pre-set high interval so it archives
-        db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2020-01-01T00:00:00+00:00", True)
+        db.upsert_cluster_progress("Being Brief", 2.6, 50.0, 5, "2020-01-01T00:00:00+00:00", True)
 
         session_id = self._setup_session(db)
 
@@ -440,19 +440,17 @@ class TestFullSessionFlow:
         assert resp.status_code == 200
         data = resp.json()
         assert "archive" in data
-        assert data["archive"]["word"] == "terse"
         assert data["archive"]["cluster_title"] == "Being Brief"
 
 
-class TestWordProgressAPI:
-    """Tests for the word-progress archive endpoint."""
+class TestClusterProgressAPI:
+    """Tests for the cluster-progress archive endpoint."""
 
-    def test_archive_word(self, test_app_with_data):
+    def test_archive_cluster(self, test_app_with_data):
         client, db, settings = test_app_with_data
-        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
 
-        resp = client.post("/api/word-progress/archive", json={
-            "word": "terse",
+        resp = client.post("/api/cluster-progress/archive", json={
             "cluster_title": "Being Brief",
             "archived": True,
         })
@@ -460,16 +458,15 @@ class TestWordProgressAPI:
         data = resp.json()
         assert data["archived"] is True
 
-        wp = db.get_word_progress("terse", "Being Brief")
-        assert wp["archived"] == 1
+        cp = db.get_cluster_progress("Being Brief")
+        assert cp["archived"] == 1
 
-    def test_restore_word(self, test_app_with_data):
+    def test_restore_cluster(self, test_app_with_data):
         client, db, settings = test_app_with_data
-        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
-        db.set_word_archived("terse", "Being Brief", True)
+        db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.set_cluster_archived("Being Brief", True)
 
-        resp = client.post("/api/word-progress/archive", json={
-            "word": "terse",
+        resp = client.post("/api/cluster-progress/archive", json={
             "cluster_title": "Being Brief",
             "archived": False,
         })
@@ -489,13 +486,13 @@ class TestLibraryAPI:
 
     def test_active_with_progress(self, test_app_with_data):
         client, db, _ = test_app_with_data
-        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
 
         resp = client.get("/api/questions/active")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["target_word"] == "terse"
+        assert data[0]["cluster_title"] == "Being Brief"
         assert "interval_days" in data[0]
 
     def test_archived_empty(self, test_app_with_data):
@@ -506,40 +503,39 @@ class TestLibraryAPI:
 
     def test_archived_with_data(self, test_app_with_data):
         client, db, settings = test_app_with_data
-        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
-        db.set_word_archived("terse", "Being Brief", True)
+        db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.set_cluster_archived("Being Brief", True)
 
         resp = client.get("/api/questions/archived")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 1
-        assert data[0]["target_word"] == "terse"
+        assert data[0]["cluster_title"] == "Being Brief"
 
     def test_reset_due(self, test_app_with_data):
         client, db, _ = test_app_with_data
-        db.upsert_word_progress("terse", "Being Brief", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
+        db.upsert_cluster_progress("Being Brief", 2.6, 25.0, 5, "2099-01-01T00:00:00+00:00", True)
 
         resp = client.post("/api/questions/reset-due", json={
-            "word": "terse",
             "cluster_title": "Being Brief",
         })
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
-        wp = db.get_word_progress("terse", "Being Brief")
-        assert wp["interval_days"] == 1.0
+        cp = db.get_cluster_progress("Being Brief")
+        assert cp["interval_days"] == 1.0
 
-    def test_reset_due_missing_word(self, test_app):
+    def test_reset_due_missing_cluster(self, test_app):
         client, _, _ = test_app
-        resp = client.post("/api/questions/reset-due", json={"word": ""})
+        resp = client.post("/api/questions/reset-due", json={"cluster_title": ""})
         assert resp.status_code == 400
 
-    def test_stats_include_active_words(self, test_app_with_data):
-        """Stats API returns active_words count."""
+    def test_stats_include_active_clusters(self, test_app_with_data):
+        """Stats API returns clusters_active count."""
         client, db, _ = test_app_with_data
         resp = client.get("/api/stats")
         data = resp.json()
-        assert "active_words" in data
-        assert data["active_words"] == 0
+        assert "clusters_active" in data
+        assert data["clusters_active"] == 0
 
     def test_stats_ready_and_archived(self, test_app_with_data):
         """Stats API returns ready and archived counts."""
@@ -547,11 +543,11 @@ class TestLibraryAPI:
         resp = client.get("/api/stats")
         data = resp.json()
         assert data["questions_ready"] == 1
-        assert data["questions_archived"] == 0
+        assert data["clusters_archived"] == 0
 
-        # Archive the word-cluster
-        db.upsert_word_progress("terse", "Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
-        db.set_word_archived("terse", "Being Brief", True)
+        # Archive the cluster
+        db.upsert_cluster_progress("Being Brief", 2.5, 1.0, 1, "2026-02-20T00:00:00+00:00", True)
+        db.set_cluster_archived("Being Brief", True)
         resp = client.get("/api/stats")
         data = resp.json()
-        assert data["questions_archived"] == 1
+        assert data["clusters_archived"] == 1
