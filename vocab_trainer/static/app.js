@@ -35,6 +35,9 @@ const ICONS = {
 // ── iOS Audio Unlock ──────────────────────────────────────────────────────
 // iOS Safari requires the first audio playback to be initiated by a user
 // gesture.  We unlock both AudioContext and HTMLAudioElement on first tap/click.
+// We keep a reference to the AudioContext so _ensureAudioSession can resume it.
+const _silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+let _sharedAudioCtx = null;
 (function initAudioUnlock() {
     let unlocked = false;
     function unlock() {
@@ -42,19 +45,19 @@ const ICONS = {
         unlocked = true;
         // Unlock Web Audio API (needed for some audio operations)
         try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const buf = ctx.createBuffer(1, 1, 22050);
-            const src = ctx.createBufferSource();
+            _sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const buf = _sharedAudioCtx.createBuffer(1, 1, 22050);
+            const src = _sharedAudioCtx.createBufferSource();
             src.buffer = buf;
-            src.connect(ctx.destination);
+            src.connect(_sharedAudioCtx.destination);
             src.start(0);
-            if (ctx.state === 'suspended') ctx.resume();
+            if (_sharedAudioCtx.state === 'suspended') _sharedAudioCtx.resume();
         } catch (e) { /* AudioContext not available */ }
         // Unlock HTMLAudioElement by playing a tiny silent WAV
         try {
             const a = document.getElementById('tts-audio');
             if (a) {
-                a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+                a.src = _silentWav;
                 a.play().then(() => { a.pause(); a.src = ''; }).catch(() => {});
             }
         } catch (e) { /* silent fail */ }
@@ -63,6 +66,24 @@ const ICONS = {
     document.addEventListener('touchend', unlock, { once: true });
     document.addEventListener('click', unlock, { once: true });
 })();
+
+/** Re-activate the iOS audio session within a user-gesture handler.
+ *  Resumes the shared AudioContext and plays a silent WAV on #tts-audio
+ *  (which was already unlocked on first gesture). */
+function _ensureAudioSession() {
+    try {
+        if (_sharedAudioCtx && _sharedAudioCtx.state === 'suspended') {
+            _sharedAudioCtx.resume();
+        }
+    } catch(e) { /* silent fail */ }
+    try {
+        const tts = document.getElementById('tts-audio');
+        if (tts) {
+            tts.src = _silentWav;
+            tts.play().then(() => { tts.pause(); tts.src = ''; }).catch(() => {});
+        }
+    } catch(e) { /* silent fail */ }
+}
 
 const API = '';
 let currentSessionId = null;
@@ -203,12 +224,17 @@ function _clearActiveAudio(keep) {
         a.currentTime = 0;
     });
     activeAudioElements = kept;
-    const tts = document.getElementById('tts-audio');
-    if (tts) {
-        tts.oncanplaythrough = null;
-        tts.pause();
-        tts.currentTime = 0;
-        tts.onended = null;
+    // Only reset #tts-audio when stopping all audio (no keep set).
+    // When called from NarrationQueue (keep set provided), leave #tts-audio
+    // alone — it may be mid-warm-up for iOS audio session activation.
+    if (!keep) {
+        const tts = document.getElementById('tts-audio');
+        if (tts) {
+            tts.oncanplaythrough = null;
+            tts.pause();
+            tts.currentTime = 0;
+            tts.onended = null;
+        }
     }
 }
 
@@ -323,6 +349,7 @@ const narrationToggle = {
 
     _onClickIdle() {
         if (!lastNarrableText) return;
+        _ensureAudioSession();  // iOS: activate session within gesture
         const q = new NarrationQueue(narrationQueue);
         narrationQueue = q;
         q.onDone = () => this.onQueueDone();
@@ -333,6 +360,7 @@ const narrationToggle = {
 
     _onRestart() {
         if (!lastNarrableText) return;
+        _ensureAudioSession();  // iOS: activate session within gesture
         // Stop current queue and start fresh from the top
         if (this._queue) { this._queue.stop(); this._queue = null; }
         this._onClickIdle();
@@ -1108,6 +1136,7 @@ function appendChatMessage(role, text) {
 
 async function speakText(text, sourceEl) {
     stopAllAudio();
+    _ensureAudioSession();  // iOS: activate session within gesture (after stopAllAudio resets #tts-audio)
     if (sourceEl) sourceEl.classList.add('speaking-loading');
     try {
         const result = await api('/api/tts/generate', 'POST', { text });
@@ -1333,6 +1362,7 @@ async function sendChatMessage(message) {
     // Set up auto-narration if enabled
     const autoNarrating = autoNarrateEnabled;
     if (autoNarrating) {
+        _ensureAudioSession();  // iOS: activate session within send gesture
         narrationQueue = new NarrationQueue(narrationQueue);
         narrationQueue.onDone = () => narrationToggle.onQueueDone();
         narrationToggle.attachQueue(narrationQueue);
